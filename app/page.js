@@ -90,6 +90,40 @@ async function decompressFile(file) {
   throw new Error(`Unsupported compression: ${file.compression}`);
 }
 
+async function fetchUserRepos(token) {
+  const repos = [];
+  let page = 1;
+  while (true) {
+    const res = await fetch(`${GITHUB_API}/user/repos?per_page=100&page=${page}&sort=updated&affiliation=owner`, {
+      headers: { Authorization: `token ${token}`, Accept: "application/vnd.github.v3+json" },
+    });
+    if (!res.ok) throw new Error("Repos fetch nahi hua");
+    const data = await res.json();
+    if (data.length === 0) break;
+    repos.push(...data);
+    if (data.length < 100) break;
+    page++;
+  }
+  return repos;
+}
+
+async function createRepo(name, isPrivate, token) {
+  const res = await fetch(`${GITHUB_API}/user/repos`, {
+    method: "POST",
+    headers: {
+      Authorization: `token ${token}`,
+      Accept: "application/vnd.github.v3+json",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ name, private: isPrivate, auto_init: true }),
+  });
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error(err.message || "Repo create nahi hua");
+  }
+  return await res.json();
+}
+
 async function getDefaultBranch(owner, repo, token) {
   const res = await fetch(`${GITHUB_API}/repos/${owner}/${repo}`, {
     headers: { Authorization: `token ${token}`, Accept: "application/vnd.github.v3+json" },
@@ -191,7 +225,21 @@ export default function ZipPusherPage() {
   const router = useRouter();
   const token = session?.accessToken || "";
 
-  const [repoUrl, setRepoUrl] = useState("");
+  // Repo selection state
+  const [mode, setMode] = useState("existing"); // "existing" | "new"
+  const [repos, setRepos] = useState([]);
+  const [reposLoading, setReposLoading] = useState(false);
+  const [selectedRepo, setSelectedRepo] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [showDropdown, setShowDropdown] = useState(false);
+
+  // New repo state
+  const [newRepoName, setNewRepoName] = useState("");
+  const [newRepoPrivate, setNewRepoPrivate] = useState(false);
+  const [creatingRepo, setCreatingRepo] = useState(false);
+  const [createdRepo, setCreatedRepo] = useState(null);
+
+  // Push state
   const [commitMsg, setCommitMsg] = useState("Update via ZIP pusher");
   const [stripRoot, setStripRoot] = useState(true);
   const [zipFile, setZipFile] = useState(null);
@@ -205,25 +253,59 @@ export default function ZipPusherPage() {
     }
   }, [sessionStatus, router]);
 
+  useEffect(() => {
+    if (token && mode === "existing") {
+      loadRepos();
+    }
+  }, [token, mode]);
+
+  const loadRepos = async () => {
+    setReposLoading(true);
+    try {
+      const data = await fetchUserRepos(token);
+      setRepos(data);
+    } catch (e) {
+      // silent
+    } finally {
+      setReposLoading(false);
+    }
+  };
+
+  const filteredRepos = repos.filter(r =>
+    r.name.toLowerCase().includes(searchQuery.toLowerCase())
+  );
+
   const log = (msg, type = "info") => setLogs(prev => [...prev, { msg, type, time: new Date().toLocaleTimeString() }]);
 
-  const parseRepoUrl = (url) => {
-    const match = url.match(/github\.com\/([^/]+)\/([^/\s]+)/);
-    if (match) return { owner: match[1], repo: match[2].replace(/\.git$/, "") };
-    const simple = url.trim().match(/^([^/]+)\/([^/]+)$/);
-    if (simple) return { owner: simple[1], repo: simple[2] };
-    return null;
+  const handleCreateRepo = async () => {
+    if (!newRepoName.trim()) return;
+    setCreatingRepo(true);
+    try {
+      const repo = await createRepo(newRepoName.trim(), newRepoPrivate, token);
+      setCreatedRepo(repo);
+      log(`✅ Repo create ho gayi: ${repo.full_name}`, "success");
+      // Switch to existing and select it
+      await loadRepos();
+      setSelectedRepo(repo.full_name);
+      setMode("existing");
+    } catch (e) {
+      log(`❌ Repo create error: ${e.message}`, "error");
+    } finally {
+      setCreatingRepo(false);
+    }
+  };
+
+  const getOwnerRepo = () => {
+    if (!selectedRepo) return null;
+    const parts = selectedRepo.split("/");
+    if (parts.length !== 2) return null;
+    return { owner: parts[0], repo: parts[1] };
   };
 
   const handlePush = async () => {
-    if (!token || !repoUrl || !zipFile) {
-      log("⚠️ Sab fields fill karo!", "error");
-      return;
-    }
-
-    const parsed = parseRepoUrl(repoUrl);
-    if (!parsed) {
-      log("❌ Repo URL format galat hai. Use: https://github.com/user/repo", "error");
+    const parsed = getOwnerRepo();
+    if (!token || !parsed || !zipFile) {
+      log("⚠️ Repo select karo aur ZIP file choose karo!", "error");
       return;
     }
 
@@ -301,9 +383,7 @@ export default function ZipPusherPage() {
     );
   }
 
-  if (sessionStatus !== "authenticated") {
-    return null; // redirecting to /login
-  }
+  if (sessionStatus !== "authenticated") return null;
 
   return (
     <div style={{
@@ -313,6 +393,7 @@ export default function ZipPusherPage() {
       fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
       padding: "16px",
     }}>
+      {/* Header */}
       <div style={{ borderBottom: "1px solid #21262d", paddingBottom: "12px", marginBottom: "20px" }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
           <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
@@ -339,24 +420,162 @@ export default function ZipPusherPage() {
 
       <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
 
-        <div>
-          <label style={{ fontSize: "11px", color: "#8b949e", display: "block", marginBottom: "5px" }}>
-            📁 Repository URL ya owner/repo
-          </label>
-          <input
-            type="text"
-            value={repoUrl}
-            onChange={e => setRepoUrl(e.target.value)}
-            placeholder="https://github.com/username/repo-name"
+        {/* Mode Toggle */}
+        <div style={{ display: "flex", gap: "8px" }}>
+          <button
+            onClick={() => { setMode("existing"); setCreatedRepo(null); }}
             style={{
-              width: "100%", boxSizing: "border-box",
-              background: "#161b22", border: "1px solid #30363d",
-              color: "#c9d1d9", borderRadius: "6px",
-              padding: "10px 12px", fontSize: "12px",
+              flex: 1, padding: "9px", borderRadius: "6px", fontSize: "12px", cursor: "pointer",
+              fontFamily: "inherit", fontWeight: 600,
+              background: mode === "existing" ? "#238636" : "#161b22",
+              color: mode === "existing" ? "#fff" : "#8b949e",
+              border: `1px solid ${mode === "existing" ? "#2ea043" : "#30363d"}`,
             }}
-          />
+          >
+            📂 Existing Repo
+          </button>
+          <button
+            onClick={() => setMode("new")}
+            style={{
+              flex: 1, padding: "9px", borderRadius: "6px", fontSize: "12px", cursor: "pointer",
+              fontFamily: "inherit", fontWeight: 600,
+              background: mode === "new" ? "#1f6feb" : "#161b22",
+              color: mode === "new" ? "#fff" : "#8b949e",
+              border: `1px solid ${mode === "new" ? "#388bfd" : "#30363d"}`,
+            }}
+          >
+            ➕ Nayi Repo
+          </button>
         </div>
 
+        {/* Existing Repo Selector */}
+        {mode === "existing" && (
+          <div style={{ position: "relative" }}>
+            <label style={{ fontSize: "11px", color: "#8b949e", display: "block", marginBottom: "5px" }}>
+              📁 Repo Select Karo {reposLoading && <span style={{ color: "#6e7681" }}>— load ho raha hai...</span>}
+            </label>
+            <div
+              onClick={() => setShowDropdown(p => !p)}
+              style={{
+                width: "100%", boxSizing: "border-box",
+                background: "#161b22", border: "1px solid #30363d",
+                color: selectedRepo ? "#c9d1d9" : "#6e7681",
+                borderRadius: "6px", padding: "10px 12px", fontSize: "12px",
+                cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center",
+              }}
+            >
+              <span>{selectedRepo || "— Repo choose karo —"}</span>
+              <span style={{ color: "#6e7681" }}>{showDropdown ? "▲" : "▼"}</span>
+            </div>
+
+            {showDropdown && (
+              <div style={{
+                position: "absolute", top: "100%", left: 0, right: 0, zIndex: 10,
+                background: "#161b22", border: "1px solid #30363d", borderRadius: "6px",
+                marginTop: "4px", maxHeight: "220px", overflowY: "auto",
+              }}>
+                <div style={{ padding: "6px" }}>
+                  <input
+                    autoFocus
+                    type="text"
+                    placeholder="Search repos..."
+                    value={searchQuery}
+                    onChange={e => setSearchQuery(e.target.value)}
+                    onClick={e => e.stopPropagation()}
+                    style={{
+                      width: "100%", boxSizing: "border-box",
+                      background: "#0d1117", border: "1px solid #30363d",
+                      color: "#c9d1d9", borderRadius: "4px",
+                      padding: "7px 10px", fontSize: "11px", outline: "none",
+                    }}
+                  />
+                </div>
+                {filteredRepos.length === 0 && (
+                  <div style={{ padding: "10px 12px", fontSize: "11px", color: "#6e7681" }}>
+                    {reposLoading ? "Loading..." : "Koi repo nahi mila"}
+                  </div>
+                )}
+                {filteredRepos.map(r => (
+                  <div
+                    key={r.full_name}
+                    onClick={() => { setSelectedRepo(r.full_name); setShowDropdown(false); setSearchQuery(""); }}
+                    style={{
+                      padding: "9px 12px", fontSize: "12px", cursor: "pointer",
+                      background: selectedRepo === r.full_name ? "#1f2937" : "transparent",
+                      borderBottom: "1px solid #21262d",
+                      display: "flex", justifyContent: "space-between", alignItems: "center",
+                    }}
+                  >
+                    <span style={{ color: "#c9d1d9" }}>{r.name}</span>
+                    <span style={{ fontSize: "10px", color: "#6e7681" }}>{r.private ? "🔒" : "🌐"}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* New Repo Creator */}
+        {mode === "new" && (
+          <div style={{
+            background: "#161b22", border: "1px solid #30363d",
+            borderRadius: "8px", padding: "14px",
+            display: "flex", flexDirection: "column", gap: "10px",
+          }}>
+            <label style={{ fontSize: "11px", color: "#8b949e" }}>🆕 Nayi Repo Ka Naam</label>
+            <input
+              type="text"
+              value={newRepoName}
+              onChange={e => setNewRepoName(e.target.value.replace(/\s/g, "-"))}
+              placeholder="my-awesome-project"
+              style={{
+                width: "100%", boxSizing: "border-box",
+                background: "#0d1117", border: "1px solid #30363d",
+                color: "#c9d1d9", borderRadius: "6px",
+                padding: "9px 12px", fontSize: "12px", outline: "none",
+              }}
+            />
+            <div
+              onClick={() => setNewRepoPrivate(p => !p)}
+              style={{
+                display: "flex", alignItems: "center", gap: "10px",
+                cursor: "pointer",
+              }}
+            >
+              <div style={{
+                width: "36px", height: "20px", borderRadius: "10px",
+                background: newRepoPrivate ? "#1f6feb" : "#30363d",
+                position: "relative", transition: "background 0.2s", flexShrink: 0,
+              }}>
+                <div style={{
+                  position: "absolute", top: "3px",
+                  left: newRepoPrivate ? "18px" : "3px",
+                  width: "14px", height: "14px",
+                  borderRadius: "50%", background: "#fff",
+                  transition: "left 0.2s",
+                }} />
+              </div>
+              <span style={{ fontSize: "12px", color: "#c9d1d9" }}>
+                {newRepoPrivate ? "🔒 Private" : "🌐 Public"}
+              </span>
+            </div>
+            <button
+              onClick={handleCreateRepo}
+              disabled={creatingRepo || !newRepoName.trim()}
+              style={{
+                padding: "10px", borderRadius: "6px", fontSize: "12px",
+                fontFamily: "inherit", fontWeight: 600, cursor: "pointer",
+                background: creatingRepo || !newRepoName.trim() ? "#161b22" : "#1f6feb",
+                color: creatingRepo || !newRepoName.trim() ? "#6e7681" : "#fff",
+                border: "1px solid #388bfd",
+              }}
+            >
+              {creatingRepo ? "⏳ Ban rahi hai..." : "✅ Repo Banao"}
+            </button>
+          </div>
+        )}
+
+        {/* Commit Message */}
         <div>
           <label style={{ fontSize: "11px", color: "#8b949e", display: "block", marginBottom: "5px" }}>
             💬 Commit Message
@@ -374,6 +593,7 @@ export default function ZipPusherPage() {
           />
         </div>
 
+        {/* ZIP Upload */}
         <div>
           <label style={{ fontSize: "11px", color: "#8b949e", display: "block", marginBottom: "5px" }}>
             📦 ZIP File
@@ -412,6 +632,7 @@ export default function ZipPusherPage() {
           />
         </div>
 
+        {/* Strip Root Toggle */}
         <div
           onClick={() => setStripRoot(p => !p)}
           style={{
@@ -442,19 +663,20 @@ export default function ZipPusherPage() {
           </div>
         </div>
 
+        {/* Push Button */}
         <button
           onClick={handlePush}
-          disabled={status === "running"}
+          disabled={status === "running" || !selectedRepo}
           style={{
             width: "100%",
             padding: "13px",
-            background: status === "running" ? "#161b22" : "#238636",
-            color: status === "running" ? "#8b949e" : "#fff",
+            background: status === "running" || !selectedRepo ? "#161b22" : "#238636",
+            color: status === "running" || !selectedRepo ? "#8b949e" : "#fff",
             border: "1px solid #2ea043",
             borderRadius: "8px",
             fontSize: "14px",
             fontWeight: 700,
-            cursor: status === "running" ? "not-allowed" : "pointer",
+            cursor: status === "running" || !selectedRepo ? "not-allowed" : "pointer",
             transition: "all 0.2s",
             fontFamily: "inherit",
           }}
@@ -463,6 +685,7 @@ export default function ZipPusherPage() {
         </button>
       </div>
 
+      {/* Logs */}
       {logs.length > 0 && (
         <div style={{
           marginTop: "20px",
