@@ -28,6 +28,17 @@ function uint8ToBase64(bytes) {
   return btoa(binary);
 }
 
+// Compute Git blob SHA: "blob <size>\0<content>"
+async function computeGitBlobSha(uint8) {
+  const header = new TextEncoder().encode(`blob ${uint8.byteLength}\0`);
+  const combined = new Uint8Array(header.length + uint8.length);
+  combined.set(header, 0);
+  combined.set(uint8, header.length);
+  const hashBuffer = await crypto.subtle.digest("SHA-1", combined);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  return hashArray.map(b => b.toString(16).padStart(2, "0")).join("");
+}
+
 function parseZip(buffer) {
   const view = new DataView(buffer);
   const bytes = new Uint8Array(buffer);
@@ -150,6 +161,23 @@ async function getTreeSha(owner, repo, commitSha, token) {
   return data.tree.sha;
 }
 
+// Fetch ALL files in repo with their SHAs (recursive tree)
+async function fetchRepoTree(owner, repo, treeSha, token) {
+  const res = await fetch(`${GITHUB_API}/repos/${owner}/${repo}/git/trees/${treeSha}?recursive=1`, {
+    headers: { Authorization: `token ${token}`, Accept: "application/vnd.github.v3+json" },
+  });
+  if (!res.ok) throw new Error(`Tree fetch error: ${res.status}`);
+  const data = await res.json();
+  // Returns map of path -> sha for blobs only
+  const map = {};
+  for (const item of data.tree) {
+    if (item.type === "blob") {
+      map[item.path] = item.sha;
+    }
+  }
+  return map;
+}
+
 async function createBlob(owner, repo, content, token) {
   const res = await fetch(`${GITHUB_API}/repos/${owner}/${repo}/git/blobs`, {
     method: "POST",
@@ -225,39 +253,38 @@ export default function ZipPusherPage() {
   const router = useRouter();
   const token = session?.accessToken || "";
 
-  // Repo selection state
-  const [mode, setMode] = useState("existing"); // "existing" | "new"
+  const [mode, setMode] = useState("existing");
   const [repos, setRepos] = useState([]);
   const [reposLoading, setReposLoading] = useState(false);
   const [selectedRepo, setSelectedRepo] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [showDropdown, setShowDropdown] = useState(false);
 
-  // New repo state
   const [newRepoName, setNewRepoName] = useState("");
   const [newRepoPrivate, setNewRepoPrivate] = useState(false);
   const [creatingRepo, setCreatingRepo] = useState(false);
-  const [createdRepo, setCreatedRepo] = useState(null);
 
-  // Push state
-  const [commitMsg, setCommitMsg] = useState("Update via ZIP pusher");
+  const [commitMsg, setCommitMsg] = useState("Smart diff update via ZIP pusher");
   const [stripRoot, setStripRoot] = useState(true);
   const [zipFile, setZipFile] = useState(null);
   const [logs, setLogs] = useState([]);
   const [status, setStatus] = useState("idle");
+  // Summary counts
+  const [summary, setSummary] = useState(null);
   const fileRef = useRef();
+  const logsEndRef = useRef();
 
   useEffect(() => {
-    if (sessionStatus === "unauthenticated") {
-      router.push("/login");
-    }
+    if (sessionStatus === "unauthenticated") router.push("/login");
   }, [sessionStatus, router]);
 
   useEffect(() => {
-    if (token && mode === "existing") {
-      loadRepos();
-    }
+    if (token && mode === "existing") loadRepos();
   }, [token, mode]);
+
+  useEffect(() => {
+    logsEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [logs]);
 
   const loadRepos = async () => {
     setReposLoading(true);
@@ -275,16 +302,15 @@ export default function ZipPusherPage() {
     r.name.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
-  const log = (msg, type = "info") => setLogs(prev => [...prev, { msg, type, time: new Date().toLocaleTimeString() }]);
+  const log = (msg, type = "info") =>
+    setLogs(prev => [...prev, { msg, type, time: new Date().toLocaleTimeString() }]);
 
   const handleCreateRepo = async () => {
     if (!newRepoName.trim()) return;
     setCreatingRepo(true);
     try {
       const repo = await createRepo(newRepoName.trim(), newRepoPrivate, token);
-      setCreatedRepo(repo);
       log(`✅ Repo create ho gayi: ${repo.full_name}`, "success");
-      // Switch to existing and select it
       await loadRepos();
       setSelectedRepo(repo.full_name);
       setMode("existing");
@@ -311,7 +337,10 @@ export default function ZipPusherPage() {
 
     setStatus("running");
     setLogs([]);
+    setSummary(null);
     const { owner, repo } = parsed;
+
+    let added = 0, updated = 0, skipped = 0;
 
     try {
       log(`📦 ZIP read ho raha hai...`);
@@ -346,17 +375,52 @@ export default function ZipPusherPage() {
       const baseTreeSha = await getTreeSha(owner, repo, latestSha, token);
       log(`✅ Base tree: ${baseTreeSha.slice(0, 7)}`);
 
-      log(`⬆️ Blobs upload ho rahe hain GitHub par...`);
-      const treeItems = [];
-      for (let i = 0; i < decompressed.length; i++) {
-        const { name, data } = decompressed[i];
-        const b64 = uint8ToBase64(data);
-        log(`  [${i + 1}/${decompressed.length}] ${name}`);
-        const blobSha = await createBlob(owner, repo, b64, token);
-        treeItems.push({ path: name, mode: "100644", type: "blob", sha: blobSha });
+      log(`🔍 Repo ki existing files fetch kar raha hai (diff ke liye)...`);
+      const repoFileMap = await fetchRepoTree(owner, repo, baseTreeSha, token);
+      const repoFileCount = Object.keys(repoFileMap).length;
+      log(`✅ Repo mein ${repoFileCount} existing files mili`);
+
+      log(`⚖️ Diff compare kar raha hai...`);
+      const filesToPush = [];
+
+      for (const { name, data } of decompressed) {
+        const localSha = await computeGitBlobSha(data);
+        const remoteSha = repoFileMap[name];
+
+        if (!remoteSha) {
+          filesToPush.push({ name, data, status: "added" });
+        } else if (localSha !== remoteSha) {
+          filesToPush.push({ name, data, status: "updated" });
+        } else {
+          skipped++;
+          // Only log skipped if count is small to avoid spam
+        }
       }
 
-      log(`🌳 Tree create ho raha hai...`);
+      log(`📊 Diff result: ${filesToPush.filter(f=>f.status==="added").length} naye, ${filesToPush.filter(f=>f.status==="updated").length} changed, ${skipped} unchanged (skip)`);
+
+      if (filesToPush.length === 0) {
+        log(`🎉 Sab files already up-to-date hain! Kuch push karne ki zaroorat nahi.`, "success");
+        setSummary({ added: 0, updated: 0, skipped });
+        setStatus("done");
+        return;
+      }
+
+      log(`⬆️ Sirf changed/new files upload ho rahe hain (${filesToPush.length} files)...`);
+      const treeItems = [];
+      for (let i = 0; i < filesToPush.length; i++) {
+        const { name, data, status: fileStatus } = filesToPush[i];
+        const b64 = uint8ToBase64(data);
+        const icon = fileStatus === "added" ? "🆕" : "✏️";
+        const label = fileStatus === "added" ? "ADDED" : "UPDATED";
+        log(`  ${icon} [${i + 1}/${filesToPush.length}] ${label}: ${name}`);
+        const blobSha = await createBlob(owner, repo, b64, token);
+        treeItems.push({ path: name, mode: "100644", type: "blob", sha: blobSha });
+        if (fileStatus === "added") added++;
+        else updated++;
+      }
+
+      log(`🌳 Tree create ho raha hai (base tree preserve hoga)...`);
       const newTreeSha = await createTree(owner, repo, baseTreeSha, treeItems, token);
 
       log(`💬 Commit ban raha hai...`);
@@ -365,7 +429,8 @@ export default function ZipPusherPage() {
       log(`🚀 Push ho raha hai ${branch} par...`);
       await updateRef(owner, repo, branch, newCommitSha, token);
 
-      log(`🎉 Done! Commit: ${newCommitSha.slice(0, 7)} pushed to ${owner}/${repo}@${branch}`, "success");
+      log(`🎉 Done! Commit: ${newCommitSha.slice(0, 7)} → ${owner}/${repo}@${branch}`, "success");
+      setSummary({ added, updated, skipped });
       setStatus("done");
     } catch (e) {
       log(`❌ Error: ${e.message}`, "error");
@@ -399,9 +464,9 @@ export default function ZipPusherPage() {
           <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
             <span style={{ fontSize: "22px" }}>🐙</span>
             <div>
-              <div style={{ fontSize: "15px", fontWeight: 700, color: "#f0f6fc" }}>ZIP → GitHub Pusher</div>
+              <div style={{ fontSize: "15px", fontWeight: 700, color: "#f0f6fc" }}>ZIP → GitHub Smart Pusher</div>
               <div style={{ fontSize: "11px", color: "#8b949e" }}>
-                {session?.user?.name || session?.user?.email || "Logged in"}
+                {session?.user?.name || session?.user?.email || "Logged in"} · Sirf changed files push hoti hain
               </div>
             </div>
           </div>
@@ -423,7 +488,7 @@ export default function ZipPusherPage() {
         {/* Mode Toggle */}
         <div style={{ display: "flex", gap: "8px" }}>
           <button
-            onClick={() => { setMode("existing"); setCreatedRepo(null); }}
+            onClick={() => { setMode("existing"); }}
             style={{
               flex: 1, padding: "9px", borderRadius: "6px", fontSize: "12px", cursor: "pointer",
               fontFamily: "inherit", fontWeight: 600,
@@ -537,10 +602,7 @@ export default function ZipPusherPage() {
             />
             <div
               onClick={() => setNewRepoPrivate(p => !p)}
-              style={{
-                display: "flex", alignItems: "center", gap: "10px",
-                cursor: "pointer",
-              }}
+              style={{ display: "flex", alignItems: "center", gap: "10px", cursor: "pointer" }}
             >
               <div style={{
                 width: "36px", height: "20px", borderRadius: "10px",
@@ -663,6 +725,21 @@ export default function ZipPusherPage() {
           </div>
         </div>
 
+        {/* Smart Diff Info Banner */}
+        <div style={{
+          background: "#0d2130", border: "1px solid #1f6feb44",
+          borderRadius: "8px", padding: "10px 14px",
+          fontSize: "11px", color: "#58a6ff",
+          display: "flex", gap: "8px", alignItems: "flex-start",
+        }}>
+          <span>🧠</span>
+          <div>
+            <strong>Smart Diff Mode ON</strong> — ZIP ki files ko repo se compare kiya jayega.
+            Sirf <span style={{ color: "#3fb950" }}>naye (🆕)</span> aur <span style={{ color: "#e3b341" }}>changed (✏️)</span> files push hongi.
+            Repo ki baaki files safe rahengi.
+          </div>
+        </div>
+
         {/* Push Button */}
         <button
           onClick={handlePush}
@@ -681,8 +758,34 @@ export default function ZipPusherPage() {
             fontFamily: "inherit",
           }}
         >
-          {status === "running" ? "⏳ Push ho raha hai..." : "🚀 GitHub Par Push Karo"}
+          {status === "running" ? "⏳ Diff check + push ho raha hai..." : "🚀 Smart Push Karo"}
         </button>
+
+        {/* Summary Card */}
+        {summary && (
+          <div style={{
+            background: "#0d1f0d", border: "1px solid #2ea04344",
+            borderRadius: "8px", padding: "12px 14px",
+          }}>
+            <div style={{ fontSize: "11px", color: "#3fb950", fontWeight: 700, marginBottom: "8px" }}>
+              ✅ Push Complete — Summary
+            </div>
+            <div style={{ display: "flex", gap: "12px" }}>
+              <div style={{ textAlign: "center", flex: 1 }}>
+                <div style={{ fontSize: "20px", fontWeight: 700, color: "#3fb950" }}>{summary.added}</div>
+                <div style={{ fontSize: "10px", color: "#6e7681" }}>🆕 Added</div>
+              </div>
+              <div style={{ textAlign: "center", flex: 1 }}>
+                <div style={{ fontSize: "20px", fontWeight: 700, color: "#e3b341" }}>{summary.updated}</div>
+                <div style={{ fontSize: "10px", color: "#6e7681" }}>✏️ Updated</div>
+              </div>
+              <div style={{ textAlign: "center", flex: 1 }}>
+                <div style={{ fontSize: "20px", fontWeight: 700, color: "#6e7681" }}>{summary.skipped}</div>
+                <div style={{ fontSize: "10px", color: "#6e7681" }}>⏭️ Skipped</div>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Logs */}
@@ -693,7 +796,7 @@ export default function ZipPusherPage() {
           border: "1px solid #21262d",
           borderRadius: "8px",
           padding: "12px",
-          maxHeight: "280px",
+          maxHeight: "300px",
           overflowY: "auto",
         }}>
           <div style={{ fontSize: "10px", color: "#6e7681", marginBottom: "8px" }}>📋 LOGS</div>
@@ -702,6 +805,7 @@ export default function ZipPusherPage() {
               <span style={{ color: "#484f58" }}>{l.time} </span>{l.msg}
             </div>
           ))}
+          <div ref={logsEndRef} />
         </div>
       )}
 
