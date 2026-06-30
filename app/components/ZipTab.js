@@ -1,8 +1,8 @@
 "use client";
 
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import { readFileAsArrayBuffer, parseZip, decompressFile, detectWrapperFolder } from "../../lib/zip";
-import { smartPush } from "../../lib/github";
+import { smartPush, fetchRepoFolders } from "../../lib/github";
 import { loadBackups, addHistoryEntry } from "../../lib/storage";
 import { RepoSelector, LogsPanel, SummaryCard, DiffBadge, BackupToggle, RestorePointsModal, ConfirmPushModal } from "./PushShared";
 
@@ -19,6 +19,7 @@ export default function ZipTab({ token, selectedRepo, setSelectedRepo }) {
   const [showConfirm, setShowConfirm] = useState(false);
   const [pendingFiles, setPendingFiles] = useState(null);
   const [progress, setProgress] = useState(null); // { current, total }
+  const [repoRootFolders, setRepoRootFolders] = useState(null); // GitHub se fetched actual root folder names — wrapper detection ko accurate banane ke liye
   const zipRef = useRef();
 
   const log = (msg, type = "info") => setLogs(prev => [...prev, { msg, type, time: new Date().toLocaleTimeString() }]);
@@ -28,6 +29,23 @@ export default function ZipTab({ token, selectedRepo, setSelectedRepo }) {
     const parts = selectedRepo.split("/");
     return parts.length === 2 ? { owner: parts[0], repo: parts[1] } : null;
   };
+
+  // Jab bhi repo select ho (ya badle), uske actual root-level folders fetch
+  // karo — taaki ZIP ke top-level folder ko guess se nahi, balki repo ke
+  // real structure se compare karke wrapper-folder decide kiya ja sake.
+  useEffect(() => {
+    const parsed = getOwnerRepo();
+    if (!parsed || !token) { setRepoRootFolders(null); return; }
+    let cancelled = false;
+    fetchRepoFolders(parsed.owner, parsed.repo, token)
+      .then(folders => {
+        if (cancelled) return;
+        const roots = folders.filter(f => f && !f.includes("/"));
+        setRepoRootFolders(roots);
+      })
+      .catch(() => { if (!cancelled) setRepoRootFolders(null); }); // fail ho to fallback list use hogi
+    return () => { cancelled = true; };
+  }, [selectedRepo, token]);
 
   // Step 1: prepare files, show confirm modal
   const handlePushClick = async () => {
@@ -42,7 +60,7 @@ export default function ZipTab({ token, selectedRepo, setSelectedRepo }) {
       const rawFiles = parseZip(buffer);
       log(`✅ ${rawFiles.length} files mili`);
 
-      const wrapperDetected = detectWrapperFolder(rawFiles);
+      const wrapperDetected = detectWrapperFolder(rawFiles, repoRootFolders);
       const stripRoot = stripOverride !== null ? stripOverride : wrapperDetected;
       log(stripRoot ? `📁 Wrapper folder detected — strip kar raha hai` : `📁 Koi wrapper folder nahi — paths as-is rahenge`);
 
@@ -117,7 +135,7 @@ export default function ZipTab({ token, selectedRepo, setSelectedRepo }) {
             try {
               const buffer = await readFileAsArrayBuffer(f);
               const rawFiles = parseZip(buffer);
-              setDetectedWrapper(detectWrapperFolder(rawFiles));
+              setDetectedWrapper(detectWrapperFolder(rawFiles, repoRootFolders));
             } catch { setDetectedWrapper(null); }
           }
         }} />
