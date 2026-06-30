@@ -1682,7 +1682,10 @@ function VercelEnvPanel({ open, activeAccountId }) {
     finally { setEnvsLoading(false); }
   };
 
-  useEffect(() => { setDeployMsg(null); setDeleteConfirmEnv(null); setEditingId(null); if (selectedProjectId) loadEnvs(selectedProjectId); else setEnvs([]); }, [selectedProjectId]);
+  const [pendingRedeploy, setPendingRedeploy] = useState(false);
+  const [redeploying, setRedeploying] = useState(false);
+
+  useEffect(() => { setDeployMsg(null); setDeleteConfirmEnv(null); setEditingId(null); setPendingRedeploy(false); if (selectedProjectId) loadEnvs(selectedProjectId); else setEnvs([]); }, [selectedProjectId]);
 
   // PAT test — verifies the token works and fetches the user's profile
   const handleTestPat = async () => {
@@ -1713,31 +1716,45 @@ function VercelEnvPanel({ open, activeAccountId }) {
 
   const toggleTarget = (t) => setNewTargets(prev => prev.includes(t) ? prev.filter(x => x !== t) : [...prev, t]);
 
+  // Redeploy status message kuch der baad apne aap hat jaata hai
+  useEffect(() => {
+    if (!deployMsg || deployMsg.ok === null) return; // "in progress" wala message tab tak rahega jab tak result na aa jaaye
+    const t = setTimeout(() => setDeployMsg(null), 6000);
+    return () => clearTimeout(t);
+  }, [deployMsg]);
+
   const selectedProject = projects.find(p => p.id === selectedProjectId) || null;
 
-  // Add/update/delete ke baad project ka latest deployment redeploy trigger
-  // karta hai, taaki naya env value turant live ho jaaye — warna purana build
-  // hi serve hota rehta hai.
-  const redeployAfterChange = async () => {
+  // Har add/update/delete ke baad turant redeploy nahi hota — sirf "pending"
+  // flag set hota hai. Jab saari keys add/edit ho jaayein tab ek hi baar
+  // "Redeploy Karo" button dabao, taaki baar baar redeploy na ho.
+  const handleRedeployNow = async () => {
     if (!selectedProject) return;
+    setRedeploying(true);
     setDeployMsg({ ok: null, text: "🔁 Redeploy ho raha hai…" });
     try {
       await triggerVercelRedeploy(account.token, selectedProject, account.teamId);
       setDeployMsg({ ok: true, text: "✅ Redeploy trigger ho gaya, 1-2 min mein live ho jayega" });
+      setPendingRedeploy(false);
     } catch (e) {
-      setDeployMsg({ ok: false, text: `⚠️ Redeploy nahi ho saka: ${e.message}. Vercel dashboard se manually redeploy kar lo.` });
+      setDeployMsg({ ok: false, text: `⚠️ Redeploy nahi ho saka: ${e.message}` });
+    } finally {
+      setRedeploying(false);
     }
   };
 
+  const duplicateEnv = newKey.trim() ? envs.find(e => e.key === newKey.trim()) : null;
+
   const handleAddEnv = async () => {
     if (!newKey.trim() || !newValue || !newTargets.length || !selectedProjectId) return;
-    setAdding(true); setAddMsg(null); setDeployMsg(null);
+    if (duplicateEnv) { setAddMsg({ ok: false, text: `❌ "${newKey.trim()}" pehle se exist karta hai — neeche se Update karo` }); return; }
+    setAdding(true); setAddMsg(null);
     try {
       await addVercelEnv(account.token, selectedProjectId, account.teamId, { key: newKey.trim(), value: newValue, target: newTargets });
       setAddMsg({ ok: true, text: `✅ ${newKey.trim()} added` });
       setNewKey(""); setNewValue("");
       await loadEnvs(selectedProjectId);
-      await redeployAfterChange();
+      setPendingRedeploy(true);
     } catch (e) { setAddMsg({ ok: false, text: `❌ ${e.message}` }); }
     finally { setAdding(false); }
   };
@@ -1757,12 +1774,12 @@ function VercelEnvPanel({ open, activeAccountId }) {
   };
 
   const handleUpdateEnv = async (env) => {
-    setSaving(true); setDeployMsg(null);
+    setSaving(true);
     try {
       await updateVercelEnv(account.token, selectedProjectId, env.id, account.teamId, { value: editValue, target: env.target });
       setEditingId(null); setEditValue("");
       await loadEnvs(selectedProjectId);
-      await redeployAfterChange();
+      setPendingRedeploy(true);
     } catch (e) { setEnvsError(e.message); }
     finally { setSaving(false); }
   };
@@ -1773,11 +1790,11 @@ function VercelEnvPanel({ open, activeAccountId }) {
 
   const confirmDeleteEnv = async () => {
     if (!deleteConfirmEnv) return;
-    setDeleting(true); setDeployMsg(null);
+    setDeleting(true);
     try {
       await deleteVercelEnv(account.token, selectedProjectId, deleteConfirmEnv.id, account.teamId);
       await loadEnvs(selectedProjectId);
-      await redeployAfterChange();
+      setPendingRedeploy(true);
     } catch (e) { setEnvsError(e.message); }
     finally { setDeleting(false); setDeleteConfirmEnv(null); }
   };
@@ -1863,7 +1880,18 @@ function VercelEnvPanel({ open, activeAccountId }) {
           {/* Add new env var */}
           <div style={{ background: "#0d1117", border: "1px solid #30363d", borderRadius: "8px", padding: "12px", display: "flex", flexDirection: "column", gap: "8px" }}>
             <div style={{ fontSize: "11px", fontWeight: 700, color: "#58a6ff" }}>➕ Naya Env Variable</div>
-            <input type="text" placeholder="KEY_NAME" value={newKey} onChange={e => setNewKey(e.target.value.toUpperCase().replace(/\s/g, "_"))} style={inp} />
+            <input type="text" placeholder="KEY_NAME" value={newKey} onChange={e => setNewKey(e.target.value.toUpperCase().replace(/\s/g, "_"))} style={{ ...inp, borderColor: duplicateEnv ? "#f85149" : "#30363d" }} />
+            {duplicateEnv && (
+              <div style={{ fontSize: "10.5px", color: "#f85149", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px", flexWrap: "wrap" }}>
+                <span>⚠️ "{duplicateEnv.key}" pehle se hai</span>
+                <button
+                  onClick={() => { setNewKey(""); setNewValue(""); handleStartEdit(duplicateEnv); }}
+                  style={{ padding: "3px 8px", borderRadius: "4px", fontSize: "10px", fontFamily: "inherit", fontWeight: 600, cursor: "pointer", background: "#21262d", color: "#58a6ff", border: "1px solid #30363d" }}
+                >
+                  Update karo →
+                </button>
+              </div>
+            )}
             <textarea placeholder="value" value={newValue} onChange={e => setNewValue(e.target.value)} rows={2} style={{ ...inp, resize: "vertical", fontFamily: "monospace" }} />
             <div style={{ display: "flex", gap: "10px", flexWrap: "wrap" }}>
               {VERCEL_TARGETS.map(([t, label]) => (
@@ -1873,7 +1901,7 @@ function VercelEnvPanel({ open, activeAccountId }) {
                 </label>
               ))}
             </div>
-            <button onClick={handleAddEnv} disabled={adding || !newKey.trim() || !newValue || !newTargets.length} style={{ padding: "9px", borderRadius: "6px", fontSize: "12px", fontFamily: "inherit", fontWeight: 600, cursor: adding ? "not-allowed" : "pointer", background: adding || !newKey.trim() || !newValue ? "#161b22" : "#1f6feb", color: adding || !newKey.trim() || !newValue ? "#6e7681" : "#fff", border: "1px solid #388bfd" }}>
+            <button onClick={handleAddEnv} disabled={adding || !newKey.trim() || !newValue || !newTargets.length || !!duplicateEnv} style={{ padding: "9px", borderRadius: "6px", fontSize: "12px", fontFamily: "inherit", fontWeight: 600, cursor: adding ? "not-allowed" : "pointer", background: adding || !newKey.trim() || !newValue || duplicateEnv ? "#161b22" : "#1f6feb", color: adding || !newKey.trim() || !newValue || duplicateEnv ? "#6e7681" : "#fff", border: "1px solid #388bfd" }}>
               {adding ? "⏳ Add ho raha hai…" : "✅ Add Karo"}
             </button>
             {addMsg && <div style={{ fontSize: "10.5px", color: addMsg.ok ? "#3fb950" : "#f85149" }}>{addMsg.text}</div>}
@@ -1913,9 +1941,21 @@ function VercelEnvPanel({ open, activeAccountId }) {
             </div>
           </div>
 
-          {deployMsg && (
-            <div style={{ fontSize: "10.5px", color: deployMsg.ok === false ? "#f85149" : deployMsg.ok === true ? "#3fb950" : "#8b949e", background: "#0d1117", border: "1px solid #21262d", borderRadius: "6px", padding: "7px 9px" }}>
-              {deployMsg.text}
+          {(pendingRedeploy || deployMsg) && (
+            <div style={{ position: "sticky", bottom: "8px", background: "#0d1117", border: "1px solid #30363d", borderRadius: "8px", padding: "9px 10px", display: "flex", flexDirection: "column", gap: "6px", boxShadow: "0 4px 12px rgba(0,0,0,0.4)" }}>
+              {pendingRedeploy && (
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px" }}>
+                  <span style={{ fontSize: "10.5px", color: "#d29922" }}>⚠️ Changes save hue hain, abhi live nahi hain</span>
+                  <button onClick={handleRedeployNow} disabled={redeploying} style={{ padding: "6px 12px", borderRadius: "6px", fontSize: "11px", fontFamily: "inherit", fontWeight: 700, cursor: redeploying ? "not-allowed" : "pointer", background: redeploying ? "#161b22" : "#1f6feb", color: redeploying ? "#6e7681" : "#fff", border: "1px solid #388bfd", flexShrink: 0 }}>
+                    {redeploying ? "⏳…" : "🔁 Redeploy Karo"}
+                  </button>
+                </div>
+              )}
+              {deployMsg && (
+                <div style={{ fontSize: "10.5px", color: deployMsg.ok === false ? "#f85149" : deployMsg.ok === true ? "#3fb950" : "#8b949e" }}>
+                  {deployMsg.text}
+                </div>
+              )}
             </div>
           )}
 
