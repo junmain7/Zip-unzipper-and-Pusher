@@ -292,7 +292,80 @@ function triggerBlobDownload(blob, filename) {
   URL.revokeObjectURL(url);
 }
 
-// ── Shared Push Logic ─────────────────────────────────────
+// ── Vercel Account Cloud Storage ──────────────────────────
+async function loadVercelAccountFromCloud() {
+  try {
+    const res = await fetch("/api/vercel-account");
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data.vercelAccount || null;
+  } catch (e) { console.error("Vercel account load failed:", e); return null; }
+}
+async function saveVercelAccountToCloud(vercelAccount) {
+  try {
+    await fetch("/api/vercel-account", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ vercelAccount }),
+    });
+  } catch (e) { console.error("Vercel account save failed:", e); }
+}
+async function disconnectVercelAccount() {
+  try { await fetch("/api/vercel-account", { method: "DELETE" }); } catch {}
+}
+
+// ── Vercel REST API ────────────────────────────────────────
+const VERCEL_API = "https://api.vercel.com";
+function vercelQS(teamId) { return teamId ? `?teamId=${encodeURIComponent(teamId)}` : ""; }
+
+async function fetchVercelProjects(token, teamId) {
+  const res = await fetch(`${VERCEL_API}/v9/projects${vercelQS(teamId)}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error("Projects fetch nahi hue");
+  const data = await res.json();
+  return data.projects || [];
+}
+
+async function fetchVercelEnvs(token, projectId, teamId) {
+  const res = await fetch(`${VERCEL_API}/v9/projects/${projectId}/env${vercelQS(teamId)}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error("Env vars fetch nahi hue");
+  const data = await res.json();
+  return data.envs || [];
+}
+
+async function addVercelEnv(token, projectId, teamId, { key, value, target }) {
+  const res = await fetch(`${VERCEL_API}/v10/projects/${projectId}/env${vercelQS(teamId)}`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ key, value, target, type: "encrypted" }),
+  });
+  if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.error?.message || "Env add nahi hua"); }
+  return res.json();
+}
+
+async function updateVercelEnv(token, projectId, envId, teamId, { value, target }) {
+  const res = await fetch(`${VERCEL_API}/v9/projects/${projectId}/env/${envId}${vercelQS(teamId)}`, {
+    method: "PATCH",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ value, target }),
+  });
+  if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.error?.message || "Env update nahi hua"); }
+  return res.json();
+}
+
+async function deleteVercelEnv(token, projectId, envId, teamId) {
+  const res = await fetch(`${VERCEL_API}/v9/projects/${projectId}/env/${envId}${vercelQS(teamId)}`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.error?.message || "Env delete nahi hua"); }
+  return res.json();
+}
+
+
 async function smartPush({ filesToProcess, owner, repo, token, commitMsg, log, backupEnabled }) {
   log(`🌐 Repo check kar raha hai...`);
   const branch = await getDefaultBranch(owner, repo, token);
@@ -1491,12 +1564,283 @@ function AccountsSkeleton() {
   );
 }
 
+// ── Left Sidebar — Vercel Env Variables connect/add/update ─
+const VERCEL_TARGETS = [["production", "Production"], ["preview", "Preview"], ["development", "Development"]];
+
+function VercelEnvPanel({ open }) {
+  const [account, setAccount] = useState(null); // {token, teamId, login, name, avatar}
+  const [loadingAccount, setLoadingAccount] = useState(true);
+  const [connecting, setConnecting] = useState(false);
+  const [connectError, setConnectError] = useState("");
+  const popupRef = useRef(null);
+
+  const [projects, setProjects] = useState([]);
+  const [projectsLoading, setProjectsLoading] = useState(false);
+  const [selectedProjectId, setSelectedProjectId] = useState("");
+
+  const [envs, setEnvs] = useState([]);
+  const [envsLoading, setEnvsLoading] = useState(false);
+  const [envsError, setEnvsError] = useState("");
+
+  const [newKey, setNewKey] = useState("");
+  const [newValue, setNewValue] = useState("");
+  const [newTargets, setNewTargets] = useState(["production", "preview", "development"]);
+  const [adding, setAdding] = useState(false);
+  const [addMsg, setAddMsg] = useState(null);
+
+  const [editingId, setEditingId] = useState(null);
+  const [editValue, setEditValue] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const loadedOnce = useRef(false);
+
+  // Load saved Vercel account once sidebar is first opened
+  useEffect(() => {
+    if (!open || loadedOnce.current) return;
+    loadedOnce.current = true;
+    (async () => {
+      setLoadingAccount(true);
+      const acc = await loadVercelAccountFromCloud();
+      setAccount(acc);
+      setLoadingAccount(false);
+    })();
+  }, [open]);
+
+  // Once connected, load projects
+  useEffect(() => {
+    if (!account?.token) return;
+    setProjectsLoading(true);
+    fetchVercelProjects(account.token, account.teamId)
+      .then(setProjects)
+      .catch(e => setConnectError(e.message))
+      .finally(() => setProjectsLoading(false));
+  }, [account]);
+
+  // Once a project is selected, load its env vars
+  const loadEnvs = async (projectId) => {
+    if (!account?.token || !projectId) return;
+    setEnvsLoading(true); setEnvsError("");
+    try { setEnvs(await fetchVercelEnvs(account.token, projectId, account.teamId)); }
+    catch (e) { setEnvsError(e.message); }
+    finally { setEnvsLoading(false); }
+  };
+
+  useEffect(() => { if (selectedProjectId) loadEnvs(selectedProjectId); else setEnvs([]); }, [selectedProjectId]);
+
+  // OAuth connect popup — same pattern as GitHub connect
+  useEffect(() => {
+    const handleMessage = (e) => {
+      if (e.origin !== window.location.origin) return;
+      const data = e.data;
+      if (!data || (data.type !== "vercel-connect-success" && data.type !== "vercel-connect-error")) return;
+
+      setConnecting(false);
+      if (data.type === "vercel-connect-error") {
+        setConnectError(data.message || "Connect failed, try again");
+        return;
+      }
+      const acc = { token: data.token, teamId: data.teamId || null, login: data.login, name: data.name, avatar: data.avatar };
+      setAccount(acc);
+      saveVercelAccountToCloud(acc);
+    };
+    window.addEventListener("message", handleMessage);
+    return () => window.removeEventListener("message", handleMessage);
+  }, []);
+
+  const handleConnect = () => {
+    setConnectError(""); setConnecting(true);
+    const w = 520, h = 680;
+    const left = window.screenX + (window.outerWidth - w) / 2;
+    const top = window.screenY + (window.outerHeight - h) / 2;
+    popupRef.current = window.open("/api/auth/vercel/start", "vercel-connect", `width=${w},height=${h},left=${left},top=${top}`);
+    if (!popupRef.current) { setConnecting(false); setConnectError("Popup blocked — allow popups and try again"); return; }
+    const poll = setInterval(() => { if (popupRef.current?.closed) { clearInterval(poll); setConnecting(false); } }, 500);
+  };
+
+  const handleDisconnect = async () => {
+    await disconnectVercelAccount();
+    setAccount(null); setProjects([]); setSelectedProjectId(""); setEnvs([]);
+  };
+
+  const toggleTarget = (t) => setNewTargets(prev => prev.includes(t) ? prev.filter(x => x !== t) : [...prev, t]);
+
+  const handleAddEnv = async () => {
+    if (!newKey.trim() || !newValue || !newTargets.length || !selectedProjectId) return;
+    setAdding(true); setAddMsg(null);
+    try {
+      await addVercelEnv(account.token, selectedProjectId, account.teamId, { key: newKey.trim(), value: newValue, target: newTargets });
+      setAddMsg({ ok: true, text: `✅ ${newKey.trim()} added` });
+      setNewKey(""); setNewValue("");
+      await loadEnvs(selectedProjectId);
+    } catch (e) { setAddMsg({ ok: false, text: `❌ ${e.message}` }); }
+    finally { setAdding(false); }
+  };
+
+  const handleUpdateEnv = async (env) => {
+    setSaving(true);
+    try {
+      await updateVercelEnv(account.token, selectedProjectId, env.id, account.teamId, { value: editValue, target: env.target });
+      setEditingId(null); setEditValue("");
+      await loadEnvs(selectedProjectId);
+    } catch (e) { setEnvsError(e.message); }
+    finally { setSaving(false); }
+  };
+
+  const handleDeleteEnv = async (env) => {
+    try { await deleteVercelEnv(account.token, selectedProjectId, env.id, account.teamId); await loadEnvs(selectedProjectId); }
+    catch (e) { setEnvsError(e.message); }
+  };
+
+  const inp = { width: "100%", boxSizing: "border-box", background: "#0d1117", border: "1px solid #30363d", color: "#c9d1d9", borderRadius: "6px", padding: "8px 10px", fontSize: "11.5px", outline: "none", fontFamily: "inherit" };
+
+  if (loadingAccount) {
+    return <div style={{ padding: "16px", fontSize: "12px", color: "#6e7681" }}>Loading…</div>;
+  }
+
+  if (!account) {
+    return (
+      <div style={{ padding: "16px", display: "flex", flexDirection: "column", gap: "12px" }}>
+        <div style={{ fontSize: "11.5px", color: "#8b949e", lineHeight: 1.6 }}>
+          Vercel account connect karo taaki apne projects ke env variables yahin se add/update kar sako.
+        </div>
+        <button onClick={handleConnect} disabled={connecting} style={{ width: "100%", padding: "11px", borderRadius: "8px", fontSize: "13px", fontWeight: 700, cursor: connecting ? "not-allowed" : "pointer", fontFamily: "inherit", background: connecting ? "#0d1117" : "#21262d", color: connecting ? "#6e7681" : "#f0f6fc", border: "1px solid #30363d", display: "flex", alignItems: "center", justifyContent: "center", gap: "9px" }}>
+          <span style={{ fontSize: "16px" }}>▲</span>
+          {connecting ? "Waiting for authorization…" : "Connect with Vercel"}
+        </button>
+        {connectError && <div style={{ fontSize: "11px", color: "#f85149" }}>❌ {connectError}</div>}
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ padding: "14px", display: "flex", flexDirection: "column", gap: "14px" }}>
+      {/* Connected account */}
+      <div style={{ display: "flex", alignItems: "center", gap: "10px", background: "#0d1117", border: "1px solid #30363d", borderRadius: "8px", padding: "10px 12px" }}>
+        <div style={{ width: "30px", height: "30px", borderRadius: "50%", overflow: "hidden", background: "#30363d", flexShrink: 0, border: "2px solid #000" }}>
+          {account.avatar && <img src={account.avatar} alt="" style={{ width: "100%", height: "100%" }} />}
+        </div>
+        <div style={{ minWidth: 0, flex: 1 }}>
+          <div style={{ fontSize: "12px", fontWeight: 700, color: "#f0f6fc", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{account.name || account.login}</div>
+          <div style={{ fontSize: "10px", color: "#6e7681" }}>@{account.login}{account.teamId ? " · team" : ""}</div>
+        </div>
+        <button onClick={handleDisconnect} style={{ background: "none", border: "1px solid #30363d", color: "#f85149", borderRadius: "6px", padding: "5px 8px", fontSize: "10px", cursor: "pointer", fontFamily: "inherit" }}>Disconnect</button>
+      </div>
+
+      {/* Project selector */}
+      <div>
+        <div style={{ fontSize: "11px", color: "#8b949e", marginBottom: "5px" }}>📦 Project</div>
+        <select value={selectedProjectId} onChange={e => setSelectedProjectId(e.target.value)} style={inp}>
+          <option value="">{projectsLoading ? "Loading projects…" : "— Project choose karo —"}</option>
+          {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+        </select>
+      </div>
+
+      {connectError && <div style={{ fontSize: "11px", color: "#f85149" }}>⚠️ {connectError}</div>}
+
+      {selectedProjectId && (
+        <>
+          {/* Add new env var */}
+          <div style={{ background: "#0d1117", border: "1px solid #30363d", borderRadius: "8px", padding: "12px", display: "flex", flexDirection: "column", gap: "8px" }}>
+            <div style={{ fontSize: "11px", fontWeight: 700, color: "#58a6ff" }}>➕ Naya Env Variable</div>
+            <input type="text" placeholder="KEY_NAME" value={newKey} onChange={e => setNewKey(e.target.value.toUpperCase().replace(/\s/g, "_"))} style={inp} />
+            <textarea placeholder="value" value={newValue} onChange={e => setNewValue(e.target.value)} rows={2} style={{ ...inp, resize: "vertical", fontFamily: "monospace" }} />
+            <div style={{ display: "flex", gap: "10px", flexWrap: "wrap" }}>
+              {VERCEL_TARGETS.map(([t, label]) => (
+                <label key={t} style={{ display: "flex", alignItems: "center", gap: "5px", fontSize: "10.5px", color: "#c9d1d9", cursor: "pointer" }}>
+                  <input type="checkbox" checked={newTargets.includes(t)} onChange={() => toggleTarget(t)} />
+                  {label}
+                </label>
+              ))}
+            </div>
+            <button onClick={handleAddEnv} disabled={adding || !newKey.trim() || !newValue || !newTargets.length} style={{ padding: "9px", borderRadius: "6px", fontSize: "12px", fontFamily: "inherit", fontWeight: 600, cursor: adding ? "not-allowed" : "pointer", background: adding || !newKey.trim() || !newValue ? "#161b22" : "#1f6feb", color: adding || !newKey.trim() || !newValue ? "#6e7681" : "#fff", border: "1px solid #388bfd" }}>
+              {adding ? "⏳ Add ho raha hai…" : "✅ Add Karo"}
+            </button>
+            {addMsg && <div style={{ fontSize: "10.5px", color: addMsg.ok ? "#3fb950" : "#f85149" }}>{addMsg.text}</div>}
+          </div>
+
+          {/* Existing env vars */}
+          <div>
+            <div style={{ fontSize: "11px", color: "#8b949e", marginBottom: "6px" }}>🔑 Existing ({envs.length})</div>
+            {envsLoading && <div style={{ fontSize: "11px", color: "#6e7681" }}>Loading…</div>}
+            {envsError && <div style={{ fontSize: "11px", color: "#f85149" }}>❌ {envsError}</div>}
+            <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+              {envs.map(env => (
+                <div key={env.id} style={{ background: "#0d1117", border: "1px solid #21262d", borderRadius: "8px", padding: "9px 10px", display: "flex", flexDirection: "column", gap: "6px" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px" }}>
+                    <code style={{ fontSize: "11.5px", color: "#f0f6fc", fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{env.key}</code>
+                    <div style={{ display: "flex", gap: "4px", flexShrink: 0 }}>
+                      {env.target?.map(t => <span key={t} style={{ fontSize: "8.5px", background: "#21262d", color: "#8b949e", borderRadius: "4px", padding: "1px 4px" }}>{t[0].toUpperCase()}</span>)}
+                    </div>
+                  </div>
+                  {editingId === env.id ? (
+                    <>
+                      <textarea value={editValue} onChange={e => setEditValue(e.target.value)} rows={2} style={{ ...inp, resize: "vertical", fontFamily: "monospace" }} />
+                      <div style={{ display: "flex", gap: "6px" }}>
+                        <button onClick={() => handleUpdateEnv(env)} disabled={saving} style={{ flex: 1, padding: "6px", borderRadius: "5px", fontSize: "10.5px", fontFamily: "inherit", fontWeight: 600, cursor: "pointer", background: "#238636", color: "#fff", border: "1px solid #2ea043" }}>{saving ? "⏳" : "Save"}</button>
+                        <button onClick={() => { setEditingId(null); setEditValue(""); }} style={{ flex: 1, padding: "6px", borderRadius: "5px", fontSize: "10.5px", fontFamily: "inherit", fontWeight: 600, cursor: "pointer", background: "#161b22", color: "#8b949e", border: "1px solid #30363d" }}>Cancel</button>
+                      </div>
+                    </>
+                  ) : (
+                    <div style={{ display: "flex", gap: "6px" }}>
+                      <button onClick={() => { setEditingId(env.id); setEditValue(""); }} style={{ flex: 1, padding: "6px", borderRadius: "5px", fontSize: "10.5px", fontFamily: "inherit", fontWeight: 600, cursor: "pointer", background: "#161b22", color: "#58a6ff", border: "1px solid #30363d" }}>✏️ Update</button>
+                      <button onClick={() => handleDeleteEnv(env)} style={{ padding: "6px 8px", borderRadius: "5px", fontSize: "10.5px", fontFamily: "inherit", fontWeight: 600, cursor: "pointer", background: "#161b22", color: "#f85149", border: "1px solid #30363d" }}>🗑️</button>
+                    </div>
+                  )}
+                </div>
+              ))}
+              {!envsLoading && envs.length === 0 && <div style={{ fontSize: "11px", color: "#484f58", textAlign: "center", padding: "10px" }}>Koi env variable nahi hai</div>}
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function Sidebar({ open, onClose }) {
+  return (
+    <>
+      {/* Backdrop */}
+      <div
+        onClick={onClose}
+        style={{
+          position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", zIndex: 150,
+          opacity: open ? 1 : 0, pointerEvents: open ? "auto" : "none",
+          transition: "opacity 0.2s ease",
+        }}
+      />
+      {/* Drawer */}
+      <div
+        style={{
+          position: "fixed", top: 0, left: 0, bottom: 0, width: "300px", maxWidth: "85vw",
+          background: "#161b22", borderRight: "1px solid #30363d", zIndex: 151,
+          transform: open ? "translateX(0)" : "translateX(-100%)",
+          transition: "transform 0.22s ease", display: "flex", flexDirection: "column",
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 16px", borderBottom: "1px solid #21262d", flexShrink: 0 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+            <span style={{ fontSize: "16px" }}>▲</span>
+            <span style={{ fontSize: "13px", fontWeight: 700, color: "#f0f6fc" }}>Vercel Env Variables</span>
+          </div>
+          <button onClick={onClose} style={{ background: "none", border: "none", color: "#6e7681", fontSize: "18px", cursor: "pointer" }}>✕</button>
+        </div>
+
+        <div style={{ overflowY: "auto", flex: 1 }}>
+          <VercelEnvPanel open={open} />
+        </div>
+      </div>
+    </>
+  );
+}
+
 // ── Main App ──────────────────────────────────────────────
 export default function ZipPusherPage() {
   const { data: session, status: sessionStatus } = useSession();
   const router = useRouter();
 
   const [activeTab, setActiveTab] = useState("zip");
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const [selectedRepo, setSelectedRepo] = useState("");
   const [accounts, setAccounts] = useState([]);
   const [accountsLoading, setAccountsLoading] = useState(true);
@@ -1569,8 +1913,17 @@ export default function ZipPusherPage() {
 
       {/* Header */}
       <div style={{ padding: "13px 18px", borderBottom: "1px solid #21262d", display: "flex", alignItems: "center", justifyContent: "space-between", flexShrink: 0, gap: "10px", background: "linear-gradient(180deg, #11161d 0%, #0d1117 100%)", position: "sticky", top: 0, zIndex: 60 }}>
-        {/* Logo + Title */}
+        {/* Hamburger + Logo + Title */}
         <div style={{ display: "flex", alignItems: "center", gap: "9px" }}>
+          <button
+            onClick={() => setSidebarOpen(true)}
+            aria-label="Open menu"
+            style={{ width: "34px", height: "34px", borderRadius: "8px", background: "#161b22", border: "1px solid #21262d", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", flexShrink: 0, gap: "3px", flexDirection: "column" }}
+          >
+            <span style={{ width: "16px", height: "2px", background: "#c9d1d9", borderRadius: "2px" }} />
+            <span style={{ width: "16px", height: "2px", background: "#c9d1d9", borderRadius: "2px" }} />
+            <span style={{ width: "16px", height: "2px", background: "#c9d1d9", borderRadius: "2px" }} />
+          </button>
           <div style={{ width: "30px", height: "30px", borderRadius: "8px", background: "#161b22", border: "1px solid #21262d", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "16px" }}>🐙</div>
           <div>
             <div style={{ fontSize: "13.5px", fontWeight: 700, color: "#f0f6fc", letterSpacing: "0.2px" }}>Smart Pusher</div>
@@ -1695,6 +2048,9 @@ export default function ZipPusherPage() {
           </button>
         ))}
       </div>
+
+      {/* Left Sidebar drawer — Vercel env variables */}
+      <Sidebar open={sidebarOpen} onClose={() => setSidebarOpen(false)} />
 
       {/* Add Account Modal */}
       {showAddModal && (
