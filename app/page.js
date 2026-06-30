@@ -7,12 +7,11 @@ import { useRouter } from "next/navigation";
 const GITHUB_API = "https://api.github.com";
 
 // ── Accounts Storage Helpers ──────────────────────────────
-const ACCOUNTS_KEY = "ghpusher_accounts";
-const ACTIVE_KEY = "ghpusher_active";
-function loadAccounts() { try { return JSON.parse(localStorage.getItem(ACCOUNTS_KEY) || "[]"); } catch { return []; } }
-function saveAccounts(a) { localStorage.setItem(ACCOUNTS_KEY, JSON.stringify(a)); }
-function loadActiveId() { return localStorage.getItem(ACTIVE_KEY) || null; }
-function saveActiveId(id) { if (id) localStorage.setItem(ACTIVE_KEY, id); else localStorage.removeItem(ACTIVE_KEY); }
+// Firestore hi single source of truth hai ab — localStorage cache hata diya
+// (cross-Gmail-account leak avoid karne ke liye). Ye no-op stubs sirf isliye
+// rakhe hain taaki neeche ke call-sites untouched rahein.
+function saveAccounts() {}
+function saveActiveId() {}
 function maskPat(pat) { if (!pat || pat.length < 8) return "••••••••"; return pat.slice(0, 4) + "••••••" + pat.slice(-4); }
 
 // ── Cloud sync — accounts cross-device available (via server-side API, NextAuth session-verified) ──
@@ -1410,6 +1409,26 @@ function SwitchAccountModal({ onClose, accounts, setAccounts, activeAccountId, s
   );
 }
 
+// ── Skeleton Loader (Firestore se accounts fetch hone tak) ────
+function AccountsSkeleton() {
+  const shimmer = {
+    background: "linear-gradient(90deg, #161b22 25%, #21262d 37%, #161b22 63%)",
+    backgroundSize: "400% 100%",
+    animation: "ghpusher-shimmer 1.4s ease infinite",
+    borderRadius: "6px",
+  };
+  return (
+    <div style={{ minHeight: "100vh", background: "#0d1117", padding: "16px", fontFamily: "'JetBrains Mono', 'Fira Code', monospace" }}>
+      <style>{`@keyframes ghpusher-shimmer { 0% { background-position: 100% 50%; } 100% { background-position: 0 50%; } }`}</style>
+      <div style={{ ...shimmer, height: "20px", width: "55%", marginBottom: "18px" }} />
+      <div style={{ ...shimmer, height: "44px", width: "100%", marginBottom: "12px" }} />
+      <div style={{ ...shimmer, height: "120px", width: "100%", marginBottom: "12px" }} />
+      <div style={{ ...shimmer, height: "44px", width: "70%", marginBottom: "8px" }} />
+      <div style={{ ...shimmer, height: "44px", width: "85%" }} />
+    </div>
+  );
+}
+
 // ── Main App ──────────────────────────────────────────────
 export default function ZipPusherPage() {
   const { data: session, status: sessionStatus } = useSession();
@@ -1418,6 +1437,7 @@ export default function ZipPusherPage() {
   const [activeTab, setActiveTab] = useState("zip");
   const [selectedRepo, setSelectedRepo] = useState("");
   const [accounts, setAccounts] = useState([]);
+  const [accountsLoading, setAccountsLoading] = useState(true);
   const [activeAccountId, setActiveAccountId] = useState(null);
   const [showAccountMenu, setShowAccountMenu] = useState(false);
   const [showAddModal, setShowAddModal] = useState(false);
@@ -1428,35 +1448,30 @@ export default function ZipPusherPage() {
 
   useEffect(() => {
     if (sessionStatus !== "authenticated") return;
+    setAccountsLoading(true);
     (async () => {
-      const local = loadAccounts();
-      const localActive = loadActiveId();
-      const cloud = await loadAccountsFromCloud();
-
-      // Cloud data wins if it exists (so dusra device pe latest milta hai),
-      // warna local data ko hi cloud mein pehli baar push kar do.
-      const finalAccounts = cloud?.accounts?.length ? cloud.accounts : local;
-      const finalActive = cloud?.activeId || localActive;
+      const cloud = await loadAccountsFromCloud(); // null only if doc doesn't exist yet
+      const finalAccounts = cloud?.accounts || [];
+      const finalActive = cloud?.activeId || null;
 
       setAccounts(finalAccounts);
-      saveAccounts(finalAccounts);
       if (finalActive && finalAccounts.find(a => a.id === finalActive)) {
         setActiveAccountId(finalActive);
-        saveActiveId(finalActive);
       } else if (finalAccounts.length > 0) {
         setActiveAccountId(finalAccounts[0].id);
-        saveActiveId(finalAccounts[0].id);
+      } else {
+        setActiveAccountId(null);
       }
-
-      if (!cloud) saveAccountsToCloud(finalAccounts, finalActive || finalAccounts[0]?.id || null);
+      setAccountsLoading(false);
     })();
   }, [sessionStatus]);
 
-  // Har baar accounts/active change ho, cloud (Firestore via server API) mein bhi sync kar do
+  // Har baar accounts/active change ho, Firestore mein sync kar do (initial load ke baad hi —
+  // warna load hote hi khaali state Firestore mein overwrite ho jayega)
   useEffect(() => {
-    if (sessionStatus !== "authenticated") return;
+    if (sessionStatus !== "authenticated" || accountsLoading) return;
     saveAccountsToCloud(accounts, activeAccountId);
-  }, [accounts, activeAccountId, sessionStatus]);
+  }, [accounts, activeAccountId, sessionStatus, accountsLoading]);
 
   // Close dropdown on outside click
   useEffect(() => {
@@ -1479,6 +1494,7 @@ export default function ZipPusherPage() {
 
   if (sessionStatus === "loading") return <div style={{ minHeight: "100vh", background: "#0d1117", color: "#8b949e", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "monospace" }}>Loading...</div>;
   if (sessionStatus !== "authenticated") return null;
+  if (accountsLoading) return <AccountsSkeleton />;
 
   const tabs = [
     { id: "zip", label: "ZIP Push", icon: "📦" },
