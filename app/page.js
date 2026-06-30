@@ -6,6 +6,16 @@ import { useRouter } from "next/navigation";
 
 const GITHUB_API = "https://api.github.com";
 
+// ── Accounts Storage Helpers ──────────────────────────────
+const ACCOUNTS_KEY = "ghpusher_accounts";
+const ACTIVE_KEY = "ghpusher_active";
+function loadAccounts() { try { return JSON.parse(localStorage.getItem(ACCOUNTS_KEY) || "[]"); } catch { return []; } }
+function saveAccounts(a) { localStorage.setItem(ACCOUNTS_KEY, JSON.stringify(a)); }
+function loadActiveId() { return localStorage.getItem(ACTIVE_KEY) || null; }
+function saveActiveId(id) { if (id) localStorage.setItem(ACTIVE_KEY, id); else localStorage.removeItem(ACTIVE_KEY); }
+function maskPat(pat) { if (!pat || pat.length < 8) return "••••••••"; return pat.slice(0, 4) + "••••••" + pat.slice(-4); }
+
+
 // ── Helpers ──────────────────────────────────────────────
 function uint8ToBase64(bytes) {
   let binary = "";
@@ -612,23 +622,159 @@ function FilesTab({ token, selectedRepo, setSelectedRepo }) {
   );
 }
 
+// ── Accounts Tab ─────────────────────────────────────────
+function AccountsTab({ activeAccountId, setActiveAccountId, accounts, setAccounts }) {
+  const [showAdd, setShowAdd] = useState(false);
+  const [label, setLabel] = useState("");
+  const [pat, setPat] = useState("");
+  const [patVisible, setPatVisible] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState(null);
+  const [deleteConfirm, setDeleteConfirm] = useState(null);
+
+  const inp = { width: "100%", boxSizing: "border-box", background: "#161b22", border: "1px solid #30363d", color: "#c9d1d9", borderRadius: "6px", padding: "9px 12px", fontSize: "12px", outline: "none", fontFamily: "inherit" };
+
+  const handleTest = async () => {
+    if (!pat.trim()) return;
+    setTesting(true); setTestResult(null);
+    try {
+      const res = await fetch("https://api.github.com/user", { headers: { Authorization: `token ${pat.trim()}`, Accept: "application/vnd.github.v3+json" } });
+      if (!res.ok) throw new Error("Invalid");
+      const d = await res.json();
+      setTestResult({ ok: true, login: d.login, name: d.name, avatar: d.avatar_url });
+    } catch { setTestResult({ ok: false }); }
+    finally { setTesting(false); }
+  };
+
+  const handleAdd = () => {
+    if (!label.trim() || !pat.trim() || !testResult?.ok) return;
+    const newAcc = { id: Math.random().toString(36).slice(2), label: label.trim(), pat: pat.trim(), login: testResult.login, avatar: testResult.avatar };
+    const updated = [...accounts, newAcc];
+    saveAccounts(updated); setAccounts(updated);
+    if (!activeAccountId) { saveActiveId(newAcc.id); setActiveAccountId(newAcc.id); }
+    setLabel(""); setPat(""); setTestResult(null); setShowAdd(false); setPatVisible(false);
+  };
+
+  const handleDelete = (id) => {
+    const updated = accounts.filter(a => a.id !== id);
+    saveAccounts(updated); setAccounts(updated);
+    if (activeAccountId === id) { const n = updated[0]?.id || null; saveActiveId(n || ""); setActiveAccountId(n); }
+    setDeleteConfirm(null);
+  };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
+      <div style={{ fontSize: "11px", color: "#8b949e" }}>PAT se multiple accounts — switch karte waqt sirf label dikhega, PAT nahi.</div>
+
+      {accounts.length === 0 && !showAdd && (
+        <div style={{ background: "#161b22", border: "1px solid #30363d", borderRadius: "8px", padding: "24px", textAlign: "center" }}>
+          <div style={{ fontSize: "28px", marginBottom: "8px" }}>👤</div>
+          <div style={{ fontSize: "12px", color: "#6e7681" }}>Koi account nahi — add karo</div>
+        </div>
+      )}
+
+      {accounts.map(acc => {
+        const isActive = acc.id === activeAccountId;
+        return (
+          <div key={acc.id} style={{ background: "#161b22", border: `1px solid ${isActive ? "#2ea043" : "#30363d"}`, borderRadius: "8px", padding: "12px", display: "flex", alignItems: "center", gap: "10px" }}>
+            <div style={{ width: "36px", height: "36px", borderRadius: "50%", background: "#30363d", flexShrink: 0, overflow: "hidden", border: `2px solid ${isActive ? "#2ea043" : "#30363d"}` }}>
+              {acc.avatar && <img src={acc.avatar} alt="" style={{ width: "100%", height: "100%" }} />}
+            </div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: "13px", fontWeight: 700, color: "#f0f6fc", display: "flex", alignItems: "center", gap: "6px" }}>
+                {acc.label}
+                {isActive && <span style={{ fontSize: "9px", background: "#238636", color: "#fff", borderRadius: "4px", padding: "1px 5px" }}>ACTIVE</span>}
+              </div>
+              <div style={{ fontSize: "10px", color: "#6e7681" }}>@{acc.login} · {maskPat(acc.pat)}</div>
+            </div>
+            <div style={{ display: "flex", gap: "6px", flexShrink: 0 }}>
+              {!isActive && (
+                <button onClick={() => { saveActiveId(acc.id); setActiveAccountId(acc.id); }} style={{ background: "#238636", border: "none", color: "#fff", borderRadius: "6px", padding: "5px 10px", fontSize: "11px", cursor: "pointer", fontFamily: "inherit", fontWeight: 600 }}>Switch</button>
+              )}
+              {deleteConfirm === acc.id ? (
+                <>
+                  <button onClick={() => handleDelete(acc.id)} style={{ background: "#da3633", border: "none", color: "#fff", borderRadius: "6px", padding: "5px 8px", fontSize: "11px", cursor: "pointer", fontFamily: "inherit" }}>Haan</button>
+                  <button onClick={() => setDeleteConfirm(null)} style={{ background: "#30363d", border: "none", color: "#c9d1d9", borderRadius: "6px", padding: "5px 8px", fontSize: "11px", cursor: "pointer", fontFamily: "inherit" }}>Nahi</button>
+                </>
+              ) : (
+                <button onClick={() => setDeleteConfirm(acc.id)} style={{ background: "none", border: "1px solid #30363d", color: "#6e7681", borderRadius: "6px", padding: "5px 8px", fontSize: "11px", cursor: "pointer", fontFamily: "inherit" }}>🗑️</button>
+              )}
+            </div>
+          </div>
+        );
+      })}
+
+      {showAdd ? (
+        <div style={{ background: "#161b22", border: "1px solid #388bfd", borderRadius: "8px", padding: "14px", display: "flex", flexDirection: "column", gap: "10px" }}>
+          <div style={{ fontSize: "12px", fontWeight: 700, color: "#58a6ff" }}>➕ Naya Account</div>
+          <div>
+            <div style={{ fontSize: "11px", color: "#8b949e", marginBottom: "4px" }}>🏷️ Label (e.g. "Work", "Personal")</div>
+            <input type="text" value={label} onChange={e => setLabel(e.target.value)} placeholder="My Work Account" style={inp} />
+          </div>
+          <div>
+            <div style={{ fontSize: "11px", color: "#8b949e", marginBottom: "4px" }}>
+              🔑 GitHub PAT &nbsp;
+              <a href="https://github.com/settings/tokens/new?scopes=repo" target="_blank" rel="noopener noreferrer" style={{ color: "#58a6ff", textDecoration: "none" }}>Generate karo ↗</a>
+            </div>
+            <div style={{ position: "relative" }}>
+              <input type={patVisible ? "text" : "password"} value={pat} onChange={e => { setPat(e.target.value); setTestResult(null); }} placeholder="ghp_xxxxxxxxxxxx" style={{ ...inp, paddingRight: "60px" }} />
+              <button onClick={() => setPatVisible(p => !p)} style={{ position: "absolute", right: "8px", top: "50%", transform: "translateY(-50%)", background: "none", border: "none", color: "#6e7681", cursor: "pointer", fontSize: "11px", fontFamily: "inherit" }}>
+                {patVisible ? "Hide" : "Show"}
+              </button>
+            </div>
+          </div>
+          {testResult && (
+            <div style={{ background: testResult.ok ? "#0d1f0d" : "#1f0d0d", border: `1px solid ${testResult.ok ? "#2ea043" : "#da3633"}`, borderRadius: "6px", padding: "8px 10px", fontSize: "11px", display: "flex", alignItems: "center", gap: "8px" }}>
+              {testResult.ok ? (
+                <><img src={testResult.avatar} alt="" style={{ width: "20px", height: "20px", borderRadius: "50%" }} /><span style={{ color: "#3fb950" }}>✅ Valid! @{testResult.login} ({testResult.name})</span></>
+              ) : <span style={{ color: "#f85149" }}>❌ Invalid token</span>}
+            </div>
+          )}
+          <div style={{ display: "flex", gap: "8px" }}>
+            <button onClick={handleTest} disabled={testing || !pat.trim()} style={{ flex: 1, padding: "9px", borderRadius: "6px", fontSize: "12px", fontFamily: "inherit", fontWeight: 600, cursor: testing || !pat.trim() ? "not-allowed" : "pointer", background: testing || !pat.trim() ? "#0d1117" : "#1f6feb", color: testing || !pat.trim() ? "#6e7681" : "#fff", border: "1px solid #388bfd" }}>
+              {testing ? "⏳..." : "🔍 Test Karo"}
+            </button>
+            <button onClick={handleAdd} disabled={!testResult?.ok || !label.trim()} style={{ flex: 1, padding: "9px", borderRadius: "6px", fontSize: "12px", fontFamily: "inherit", fontWeight: 600, cursor: !testResult?.ok || !label.trim() ? "not-allowed" : "pointer", background: !testResult?.ok || !label.trim() ? "#0d1117" : "#238636", color: !testResult?.ok || !label.trim() ? "#6e7681" : "#fff", border: "1px solid #2ea043" }}>
+              ✅ Add Karo
+            </button>
+          </div>
+          <button onClick={() => { setShowAdd(false); setLabel(""); setPat(""); setTestResult(null); setPatVisible(false); }} style={{ background: "none", border: "none", color: "#6e7681", fontSize: "11px", cursor: "pointer", fontFamily: "inherit" }}>Cancel</button>
+        </div>
+      ) : (
+        <button onClick={() => setShowAdd(true)} style={{ width: "100%", padding: "12px", borderRadius: "8px", fontSize: "13px", fontWeight: 600, cursor: "pointer", fontFamily: "inherit", background: "#161b22", color: "#58a6ff", border: "1px dashed #388bfd" }}>
+          ➕ Account Add Karo
+        </button>
+      )}
+      <div style={{ fontSize: "10px", color: "#484f58", textAlign: "center" }}>PAT localStorage mein save hota hai · Scope chahiye: <code>repo</code></div>
+    </div>
+  );
+}
+
 // ── Main App ──────────────────────────────────────────────
 export default function ZipPusherPage() {
   const { data: session, status: sessionStatus } = useSession();
   const router = useRouter();
-  const token = session?.accessToken || "";
 
   const [activeTab, setActiveTab] = useState("zip");
-  // Shared repo state across tabs
   const [selectedRepo, setSelectedRepo] = useState("");
+  const [accounts, setAccounts] = useState([]);
+  const [activeAccountId, setActiveAccountId] = useState(null);
+  const [showAccountMenu, setShowAccountMenu] = useState(false);
+
+  useEffect(() => { if (sessionStatus === "unauthenticated") router.push("/login"); }, [sessionStatus, router]);
 
   useEffect(() => {
-    if (sessionStatus === "unauthenticated") router.push("/login");
-  }, [sessionStatus, router]);
+    const saved = loadAccounts();
+    const savedActive = loadActiveId();
+    setAccounts(saved);
+    if (savedActive && saved.find(a => a.id === savedActive)) setActiveAccountId(savedActive);
+    else if (saved.length > 0) { setActiveAccountId(saved[0].id); saveActiveId(saved[0].id); }
+  }, []);
 
-  if (sessionStatus === "loading") {
-    return <div style={{ minHeight: "100vh", background: "#0d1117", color: "#8b949e", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "monospace" }}>Loading...</div>;
-  }
+  const activeAccount = accounts.find(a => a.id === activeAccountId);
+  const token = activeAccount?.pat || session?.accessToken || "";
+
+  if (sessionStatus === "loading") return <div style={{ minHeight: "100vh", background: "#0d1117", color: "#8b949e", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "monospace" }}>Loading...</div>;
   if (sessionStatus !== "authenticated") return null;
 
   const tabs = [
@@ -640,43 +786,113 @@ export default function ZipPusherPage() {
     <div style={{ minHeight: "100vh", background: "#0d1117", color: "#c9d1d9", fontFamily: "'JetBrains Mono','Fira Code',monospace", display: "flex", flexDirection: "column" }}>
 
       {/* Header */}
-      <div style={{ padding: "14px 16px", borderBottom: "1px solid #21262d", display: "flex", alignItems: "center", justifyContent: "space-between", flexShrink: 0 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+      <div style={{ padding: "12px 16px", borderBottom: "1px solid #21262d", display: "flex", alignItems: "center", justifyContent: "space-between", flexShrink: 0, gap: "10px" }}>
+        {/* Logo + Title */}
+        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
           <span style={{ fontSize: "20px" }}>🐙</span>
-          <div>
-            <div style={{ fontSize: "14px", fontWeight: 700, color: "#f0f6fc" }}>GitHub Smart Pusher</div>
-            <div style={{ fontSize: "10px", color: "#8b949e" }}>{session?.user?.name || session?.user?.email}</div>
-          </div>
+          <div style={{ fontSize: "13px", fontWeight: 700, color: "#f0f6fc" }}>Smart Pusher</div>
         </div>
-        <button onClick={() => signOut({ callbackUrl: "/login" })} style={{ background: "none", border: "1px solid #30363d", color: "#8b949e", borderRadius: "6px", padding: "5px 10px", fontSize: "11px", cursor: "pointer", fontFamily: "inherit" }}>
-          Logout
-        </button>
+
+        {/* Right: Avatar Dropdown */}
+        <div style={{ position: "relative" }}>
+          <button
+            onClick={() => setShowAccountMenu(p => !p)}
+            style={{ background: "none", border: "none", cursor: "pointer", padding: 0, display: "flex", alignItems: "center", gap: "8px" }}
+          >
+            {/* Avatar */}
+            <div style={{ width: "32px", height: "32px", borderRadius: "50%", overflow: "hidden", border: `2px solid ${activeAccount ? "#2ea043" : "#30363d"}`, background: "#30363d", flexShrink: 0 }}>
+              {activeAccount?.avatar
+                ? <img src={activeAccount.avatar} alt="" style={{ width: "100%", height: "100%" }} />
+                : <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "14px" }}>👤</div>
+              }
+            </div>
+            {/* Name + chevron */}
+            <div style={{ textAlign: "left" }}>
+              <div style={{ fontSize: "12px", fontWeight: 600, color: "#f0f6fc" }}>
+                {activeAccount ? activeAccount.label : (session?.user?.name || "Account")}
+              </div>
+              {activeAccount && <div style={{ fontSize: "10px", color: "#6e7681" }}>@{activeAccount.login}</div>}
+            </div>
+            <span style={{ color: "#6e7681", fontSize: "10px" }}>▾</span>
+          </button>
+
+          {/* Dropdown */}
+          {showAccountMenu && (
+            <div style={{ position: "fixed", top: "56px", right: "12px", width: "240px", background: "#161b22", border: "1px solid #30363d", borderRadius: "10px", zIndex: 100, boxShadow: "0 8px 24px rgba(0,0,0,0.5)", overflow: "hidden" }}>
+              {/* Header */}
+              <div style={{ padding: "10px 14px", borderBottom: "1px solid #21262d" }}>
+                <div style={{ fontSize: "11px", color: "#6e7681", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em" }}>Switch Account</div>
+              </div>
+
+              {/* Account list */}
+              <div style={{ maxHeight: "280px", overflowY: "auto" }}>
+                {accounts.length === 0 && (
+                  <div style={{ padding: "14px", fontSize: "11px", color: "#6e7681", textAlign: "center" }}>Koi account nahi</div>
+                )}
+                {accounts.map(acc => {
+                  const isActive = acc.id === activeAccountId;
+                  return (
+                    <button key={acc.id}
+                      onClick={() => { saveActiveId(acc.id); setActiveAccountId(acc.id); setSelectedRepo(""); setShowAccountMenu(false); }}
+                      style={{ width: "100%", background: isActive ? "#1f2937" : "none", border: "none", cursor: "pointer", padding: "10px 14px", display: "flex", alignItems: "center", gap: "10px", fontFamily: "inherit", borderBottom: "1px solid #21262d" }}
+                    >
+                      <div style={{ width: "28px", height: "28px", borderRadius: "50%", overflow: "hidden", flexShrink: 0, border: `2px solid ${isActive ? "#2ea043" : "transparent"}`, background: "#30363d" }}>
+                        {acc.avatar && <img src={acc.avatar} alt="" style={{ width: "100%", height: "100%" }} />}
+                      </div>
+                      <div style={{ flex: 1, textAlign: "left", minWidth: 0 }}>
+                        <div style={{ fontSize: "12px", fontWeight: 600, color: "#f0f6fc" }}>{acc.label}</div>
+                        <div style={{ fontSize: "10px", color: "#6e7681" }}>@{acc.login}</div>
+                      </div>
+                      {isActive && <span style={{ fontSize: "14px", color: "#3fb950", flexShrink: 0 }}>✓</span>}
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* Actions */}
+              <div style={{ borderTop: "1px solid #21262d" }}>
+                <button
+                  onClick={() => { setShowAccountMenu(false); setActiveTab("accounts"); }}
+                  style={{ width: "100%", background: "none", border: "none", cursor: "pointer", padding: "11px 14px", display: "flex", alignItems: "center", gap: "10px", fontFamily: "inherit", color: "#58a6ff" }}
+                >
+                  <span style={{ fontSize: "16px" }}>➕</span>
+                  <span style={{ fontSize: "12px", fontWeight: 600 }}>Add account</span>
+                </button>
+                <button
+                  onClick={() => { setShowAccountMenu(false); signOut({ callbackUrl: "/login" }); }}
+                  style={{ width: "100%", background: "none", border: "none", cursor: "pointer", padding: "11px 14px", display: "flex", alignItems: "center", gap: "10px", fontFamily: "inherit", color: "#8b949e", borderTop: "1px solid #21262d" }}
+                >
+                  <span style={{ fontSize: "16px" }}>🚪</span>
+                  <span style={{ fontSize: "12px" }}>Sign out</span>
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Backdrop */}
+          {showAccountMenu && <div onClick={() => setShowAccountMenu(false)} style={{ position: "fixed", inset: 0, zIndex: 99 }} />}
+        </div>
       </div>
 
-      {/* Tab Content */}
+      {/* Content */}
       <div style={{ flex: 1, overflowY: "auto", padding: "16px", paddingBottom: "80px" }}>
-        {activeTab === "zip" && <ZipTab token={token} selectedRepo={selectedRepo} setSelectedRepo={setSelectedRepo} />}
-        {activeTab === "files" && <FilesTab token={token} selectedRepo={selectedRepo} setSelectedRepo={setSelectedRepo} />}
+        {!token && activeTab !== "accounts" && (
+          <div style={{ background: "#1f1207", border: "1px solid #e3b34144", borderRadius: "8px", padding: "14px", fontSize: "12px", color: "#e3b341", textAlign: "center", marginBottom: "14px" }}>
+            ⚠️ Pehle <strong>Accounts</strong> tab mein ek account add karo
+          </div>
+        )}
+        {activeTab === "zip" && token && <ZipTab token={token} selectedRepo={selectedRepo} setSelectedRepo={setSelectedRepo} />}
+        {activeTab === "files" && token && <FilesTab token={token} selectedRepo={selectedRepo} setSelectedRepo={setSelectedRepo} />}
+        {activeTab === "accounts" && <AccountsTab activeAccountId={activeAccountId} setActiveAccountId={setActiveAccountId} accounts={accounts} setAccounts={setAccounts} />}
       </div>
 
       {/* Bottom Nav */}
-      <div style={{
-        position: "fixed", bottom: 0, left: 0, right: 0,
-        background: "#161b22",
-        borderTop: "1px solid #21262d",
-        display: "flex",
-        zIndex: 50,
-      }}>
+      <div style={{ position: "fixed", bottom: 0, left: 0, right: 0, background: "#161b22", borderTop: "1px solid #21262d", display: "flex", zIndex: 50 }}>
         {tabs.map(tab => (
-          <button key={tab.id} onClick={() => setActiveTab(tab.id)} style={{
-            flex: 1, padding: "12px 8px 14px",
-            background: "none", border: "none", cursor: "pointer",
-            display: "flex", flexDirection: "column", alignItems: "center", gap: "4px",
-            fontFamily: "inherit",
-            borderTop: activeTab === tab.id ? "2px solid #58a6ff" : "2px solid transparent",
-          }}>
+          <button key={tab.id} onClick={() => setActiveTab(tab.id)} style={{ flex: 1, padding: "12px 8px 14px", background: "none", border: "none", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: "4px", fontFamily: "inherit", borderTop: activeTab === tab.id ? "2px solid #58a6ff" : "2px solid transparent", position: "relative" }}>
             <span style={{ fontSize: "20px" }}>{tab.icon}</span>
             <span style={{ fontSize: "10px", fontWeight: 600, color: activeTab === tab.id ? "#58a6ff" : "#6e7681" }}>{tab.label}</span>
+
           </button>
         ))}
       </div>
