@@ -212,6 +212,23 @@ async function fetchRepoTree(owner, repo, treeSha, token) {
   return map;
 }
 
+async function fetchRepoFolders(owner, repo, token) {
+  const branch = await getDefaultBranch(owner, repo, token);
+  const commitSha = await getLatestCommitSha(owner, repo, branch, token);
+  const treeSha = await getTreeSha(owner, repo, commitSha, token);
+  const res = await fetch(`${GITHUB_API}/repos/${owner}/${repo}/git/trees/${treeSha}?recursive=1`, {
+    headers: { Authorization: `token ${token}`, Accept: "application/vnd.github.v3+json" },
+  });
+  if (!res.ok) throw new Error(`Tree fetch error: ${res.status}`);
+  const data = await res.json();
+  const folders = new Set([""]); // "" = repo root
+  for (const item of data.tree) {
+    if (item.type === "tree") folders.add(item.path);
+    else if (item.type === "blob" && item.path.includes("/")) folders.add(item.path.slice(0, item.path.lastIndexOf("/")));
+  }
+  return Array.from(folders).sort((a, b) => a.localeCompare(b));
+}
+
 async function createBlob(owner, repo, content, token) {
   const res = await fetch(`${GITHUB_API}/repos/${owner}/${repo}/git/blobs`, {
     method: "POST",
@@ -805,6 +822,9 @@ function FilesTab({ token, selectedRepo, setSelectedRepo }) {
   const [backupEnabled, setBackupEnabled] = useState(true);
   const [showRestore, setShowRestore] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
+  const [repoFolders, setRepoFolders] = useState([]);
+  const [foldersLoading, setFoldersLoading] = useState(false);
+  const [foldersError, setFoldersError] = useState("");
   const filesRef = useRef();
 
   const log = (msg, type = "info") => setLogs(prev => [...prev, { msg, type, time: new Date().toLocaleTimeString() }]);
@@ -872,6 +892,27 @@ function FilesTab({ token, selectedRepo, setSelectedRepo }) {
     <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
       <RepoSelector token={token} selectedRepo={selectedRepo} setSelectedRepo={setSelectedRepo} />
 
+      {parsedRepo && (
+        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+          <button
+            onClick={async () => {
+              setFoldersLoading(true); setFoldersError("");
+              try { setRepoFolders(await fetchRepoFolders(parsedRepo.owner, parsedRepo.repo, token)); }
+              catch (e) { setFoldersError(e.message); }
+              setFoldersLoading(false);
+            }}
+            disabled={foldersLoading}
+            style={{ background: "#161b22", border: "1px solid #30363d", color: "#a371f7", borderRadius: "6px", padding: "6px 10px", fontSize: "11px", cursor: foldersLoading ? "not-allowed" : "pointer", fontFamily: "inherit", fontWeight: 600 }}
+          >
+            {foldersLoading ? "⏳ Locations load ho rahi..." : repoFolders.length ? "🔄 Locations refresh karo" : "📂 Repo ki locations load karo"}
+          </button>
+          {repoFolders.length > 0 && !foldersLoading && (
+            <span style={{ fontSize: "10px", color: "#6e7681" }}>{repoFolders.length} folders mile</span>
+          )}
+        </div>
+      )}
+      {foldersError && <div style={{ fontSize: "11px", color: "#f85149" }}>⚠️ {foldersError}</div>}
+
       <div>
         <div style={{ fontSize: "11px", color: "#8b949e", marginBottom: "5px" }}>💬 Commit Message</div>
         <input type="text" value={commitMsg} onChange={e => setCommitMsg(e.target.value)} style={inp} />
@@ -923,6 +964,27 @@ function FilesTab({ token, selectedRepo, setSelectedRepo }) {
                   placeholder="app/members/page.js"
                 />
               </div>
+              {repoFolders.length > 0 && (
+                <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                  <span style={{ fontSize: "10px", color: "#6e7681", flexShrink: 0 }}>📂 location:</span>
+                  <select
+                    value=""
+                    onChange={e => {
+                      const val = e.target.value;
+                      if (!val) return; // placeholder selected, ignore
+                      const folder = val === "__ROOT__" ? "" : val;
+                      const baseName = repoPath.includes("/") ? repoPath.slice(repoPath.lastIndexOf("/") + 1) : repoPath;
+                      const newPath = folder ? `${folder}/${baseName}` : baseName;
+                      setIndivFiles(prev => prev.map(f => f.id === id ? { ...f, repoPath: newPath } : f));
+                    }}
+                    style={{ ...inp, padding: "5px 8px", fontSize: "11px", flex: 1, background: "#0d1117" }}
+                  >
+                    <option value="" disabled>-- repo mein existing folder chuno --</option>
+                    <option value="__ROOT__">/ (repo root)</option>
+                    {repoFolders.filter(f => f !== "").map(f => <option key={f} value={f}>{f}</option>)}
+                  </select>
+                </div>
+              )}
             </div>
           ))}
         </div>
