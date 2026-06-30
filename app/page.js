@@ -36,7 +36,29 @@ function addBackup(record) {
 }
 
 
-// ── Helpers ──────────────────────────────────────────────
+// ── Push History Storage (records EVERY push attempt, success or fail) ────
+const HISTORY_KEY = "ghpusher_history";
+function loadHistory() { try { return JSON.parse(localStorage.getItem(HISTORY_KEY) || "[]"); } catch { return []; } }
+function saveHistory(h) { localStorage.setItem(HISTORY_KEY, JSON.stringify(h)); }
+function addHistoryEntry(record) {
+  const all = loadHistory();
+  all.unshift({ id: Math.random().toString(36).slice(2), timestamp: Date.now(), ...record });
+  const trimmed = all.slice(0, 100); // keep last 100 entries total
+  saveHistory(trimmed);
+  return trimmed;
+}
+
+// ── Vercel Integration Config (per owner/repo) ─────────────────────────
+const VERCEL_KEY = "ghpusher_vercel_cfg";
+function loadVercelConfigs() { try { return JSON.parse(localStorage.getItem(VERCEL_KEY) || "{}"); } catch { return {}; } }
+function saveVercelConfigs(c) { localStorage.setItem(VERCEL_KEY, JSON.stringify(c)); }
+function getVercelConfig(owner, repo) { return loadVercelConfigs()[`${owner}/${repo}`] || null; }
+function setVercelConfig(owner, repo, cfg) {
+  const all = loadVercelConfigs();
+  all[`${owner}/${repo}`] = cfg;
+  saveVercelConfigs(all);
+}
+
 function uint8ToBase64(bytes) {
   let binary = "";
   for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
@@ -281,7 +303,7 @@ async function smartPush({ filesToProcess, owner, repo, token, commitMsg, log, b
 
   if (toPush.length === 0) {
     log(`🎉 Sab files already up-to-date!`, "success");
-    return { added: 0, updated: 0, skipped };
+    return { added: 0, updated: 0, skipped, branch, prevSha: latestSha, newSha: null };
   }
 
   log(`⬆️ ${toPush.length} files upload ho rahi hain...`);
@@ -302,7 +324,52 @@ async function smartPush({ filesToProcess, owner, repo, token, commitMsg, log, b
   log(`🚀 Push ho raha hai ${branch} par...`);
   await updateRef(owner, repo, branch, newCommitSha, token);
   log(`🎉 Done! ${newCommitSha.slice(0, 7)} → ${owner}/${repo}@${branch}`, "success");
-  return { added, updated, skipped };
+  return { added, updated, skipped, branch, prevSha: latestSha, newSha: newCommitSha };
+}
+
+// ── Vercel Auto-Rollback Monitor ──────────────────────────
+// Polls Vercel for the deployment matching newSha. If it errors out,
+// automatically force-updates the GitHub ref back to prevSha.
+async function monitorVercelDeployment({ owner, repo, branch, prevSha, newSha, githubToken, vercelToken, vercelProjectId, log }) {
+  if (!vercelToken || !vercelProjectId || !newSha) return;
+  log(`🔭 Vercel deployment monitor kar raha hai (auto-rollback ON)...`);
+  const maxAttempts = 24; // ~6 minutes at 15s interval
+  for (let i = 0; i < maxAttempts; i++) {
+    await new Promise(r => setTimeout(r, 15000));
+    let dep = null;
+    try {
+      const res = await fetch(`https://api.vercel.com/v6/deployments?projectId=${encodeURIComponent(vercelProjectId)}&limit=10`, {
+        headers: { Authorization: `Bearer ${vercelToken}` },
+      });
+      if (!res.ok) { log(`⚠️ Vercel status check fail (${res.status})`, "warn"); continue; }
+      const data = await res.json();
+      dep = (data.deployments || []).find(d => {
+        const sha = d.meta?.githubCommitSha || d.meta?.gitCommitSha || "";
+        return sha === newSha || (sha && newSha.startsWith(sha.slice(0, 7)));
+      });
+    } catch (e) { log(`⚠️ Vercel poll error: ${e.message}`, "warn"); continue; }
+
+    if (!dep) continue; // deployment not visible yet, keep polling
+
+    if (dep.readyState === "READY") {
+      log(`✅ Vercel deployment successful — koi rollback nahi chahiye`, "success");
+      return { ok: true };
+    }
+    if (dep.readyState === "ERROR" || dep.readyState === "CANCELED") {
+      log(`❌ Vercel build FAILED — auto-rollback kar raha hai ${prevSha.slice(0, 7)} par...`, "error");
+      try {
+        await updateRef(owner, repo, branch, prevSha, githubToken, true);
+        log(`⏪ Auto-rollback ho gaya — ${owner}/${repo}@${branch} wapas ${prevSha.slice(0, 7)} par`, "success");
+        return { ok: false, rolledBack: true };
+      } catch (e) {
+        log(`❌ Auto-rollback bhi fail ho gaya: ${e.message}`, "error");
+        return { ok: false, rolledBack: false };
+      }
+    }
+    // QUEUED / BUILDING / INITIALIZING → keep polling
+  }
+  log(`⌛ Vercel monitor timeout — deployment status manually check kar lo`, "warn");
+  return { ok: null };
 }
 
 // ── Sub-components ────────────────────────────────────────
@@ -555,8 +622,97 @@ function RestorePointsModal({ onClose, owner, repo, token }) {
   );
 }
 
+// Vercel Auto-Rollback Panel (shared across tabs) — per-repo settings
+function VercelRollbackPanel({ owner, repo }) {
+  const [cfg, setCfg] = useState(null);
+  const [showModal, setShowModal] = useState(false);
+  const [vToken, setVToken] = useState("");
+  const [vProjectId, setVProjectId] = useState("");
 
-// Detects if all entries in a zip share one common top-level wrapper folder.
+  useEffect(() => {
+    if (!owner || !repo) { setCfg(null); return; }
+    const c = getVercelConfig(owner, repo);
+    setCfg(c);
+    setVToken(c?.token || "");
+    setVProjectId(c?.projectId || "");
+  }, [owner, repo]);
+
+  if (!owner || !repo) return null;
+
+  const enabled = !!cfg?.autoRollback;
+
+  const toggleEnabled = () => {
+    if (!cfg?.token || !cfg?.projectId) { setShowModal(true); return; }
+    const next = { ...cfg, autoRollback: !enabled };
+    setVercelConfig(owner, repo, next);
+    setCfg(next);
+  };
+
+  const handleSave = () => {
+    const next = { token: vToken.trim(), projectId: vProjectId.trim(), autoRollback: !!(vToken.trim() && vProjectId.trim()) };
+    setVercelConfig(owner, repo, next);
+    setCfg(next);
+    setShowModal(false);
+  };
+
+  return (
+    <>
+      <div style={{ display: "flex", alignItems: "center", gap: "10px", padding: "10px 12px", background: "#161b22", border: "1px solid #30363d", borderRadius: "6px" }}>
+        <div onClick={toggleEnabled} style={{ display: "flex", alignItems: "center", gap: "10px", cursor: "pointer", flex: 1 }}>
+          <div style={{ width: "36px", height: "20px", borderRadius: "10px", background: enabled ? "#1f6feb" : "#30363d", position: "relative", flexShrink: 0 }}>
+            <div style={{ position: "absolute", top: "3px", left: enabled ? "18px" : "3px", width: "14px", height: "14px", borderRadius: "50%", background: "#fff", transition: "left 0.2s" }} />
+          </div>
+          <div>
+            <div style={{ fontSize: "12px", color: "#c9d1d9" }}>▲ Vercel Auto-Rollback</div>
+            <div style={{ fontSize: "10px", color: "#6e7681" }}>{cfg?.projectId ? `Build fail → auto revert` : "Pehle Vercel token/project ID set karo"}</div>
+          </div>
+        </div>
+        <button onClick={() => setShowModal(true)} style={{ background: "#0d1117", border: "1px solid #30363d", borderRadius: "6px", padding: "7px 10px", fontSize: "11px", color: "#58a6ff", cursor: "pointer", fontFamily: "inherit", flexShrink: 0 }}>
+          ⚙️
+        </button>
+      </div>
+
+      {showModal && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center", padding: "16px" }} onClick={() => setShowModal(false)}>
+          <div onClick={e => e.stopPropagation()} style={{ background: "#161b22", border: "1px solid #30363d", borderRadius: "12px", width: "100%", maxWidth: "380px", padding: "16px", display: "flex", flexDirection: "column", gap: "10px" }}>
+            <div style={{ fontSize: "14px", fontWeight: 700, color: "#f0f6fc" }}>▲ Vercel Settings — {owner}/{repo}</div>
+            <div style={{ fontSize: "10px", color: "#6e7681" }}>Token: Vercel → Settings → Tokens se banao. Project ID: Project → Settings mein milega.</div>
+            <input type="text" value={vToken} onChange={e => setVToken(e.target.value)} placeholder="Vercel API Token" style={{ width: "100%", boxSizing: "border-box", background: "#0d1117", border: "1px solid #30363d", color: "#c9d1d9", borderRadius: "6px", padding: "9px 12px", fontSize: "12px", outline: "none", fontFamily: "inherit" }} />
+            <input type="text" value={vProjectId} onChange={e => setVProjectId(e.target.value)} placeholder="Vercel Project ID" style={{ width: "100%", boxSizing: "border-box", background: "#0d1117", border: "1px solid #30363d", color: "#c9d1d9", borderRadius: "6px", padding: "9px 12px", fontSize: "12px", outline: "none", fontFamily: "inherit" }} />
+            <div style={{ display: "flex", gap: "8px", marginTop: "4px" }}>
+              <button onClick={() => setShowModal(false)} style={{ flex: 1, padding: "9px", borderRadius: "6px", fontSize: "12px", fontFamily: "inherit", fontWeight: 600, cursor: "pointer", background: "#0d1117", color: "#8b949e", border: "1px solid #30363d" }}>Cancel</button>
+              <button onClick={handleSave} style={{ flex: 1, padding: "9px", borderRadius: "6px", fontSize: "12px", fontFamily: "inherit", fontWeight: 600, cursor: "pointer", background: "#1f6feb", color: "#fff", border: "1px solid #388bfd" }}>Save</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+// Confirm-before-push modal — prevents accidental push to wrong repo
+function ConfirmPushModal({ owner, repo, branch, fileCount, commitMsg, onConfirm, onCancel }) {
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.65)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center", padding: "16px" }} onClick={onCancel}>
+      <div onClick={e => e.stopPropagation()} style={{ background: "#161b22", border: "1px solid #30363d", borderRadius: "12px", width: "100%", maxWidth: "380px", padding: "18px", display: "flex", flexDirection: "column", gap: "12px" }}>
+        <div style={{ fontSize: "15px", fontWeight: 700, color: "#f0f6fc" }}>🚀 Push Confirm Karo</div>
+        <div style={{ background: "#0d1117", border: "1px solid #21262d", borderRadius: "8px", padding: "12px", display: "flex", flexDirection: "column", gap: "6px" }}>
+          <div style={{ fontSize: "12px", color: "#8b949e" }}>Repo: <span style={{ color: "#58a6ff", fontWeight: 700 }}>{owner}/{repo}</span></div>
+          <div style={{ fontSize: "12px", color: "#8b949e" }}>Branch: <span style={{ color: "#3fb950", fontWeight: 700 }}>{branch || "(default)"}</span></div>
+          <div style={{ fontSize: "12px", color: "#8b949e" }}>Files: <span style={{ color: "#e3b341", fontWeight: 700 }}>{fileCount}</span></div>
+          <div style={{ fontSize: "12px", color: "#8b949e" }}>Commit: <span style={{ color: "#c9d1d9" }}>{commitMsg}</span></div>
+        </div>
+        <div style={{ fontSize: "10.5px", color: "#6e7681" }}>⚠️ Pakka check kar lo ye sahi repo hai — push hone ke baad GitHub par directly changes ho jaayenge.</div>
+        <div style={{ display: "flex", gap: "8px" }}>
+          <button onClick={onCancel} style={{ flex: 1, padding: "10px", borderRadius: "6px", fontSize: "12px", fontFamily: "inherit", fontWeight: 600, cursor: "pointer", background: "#0d1117", color: "#8b949e", border: "1px solid #30363d" }}>Cancel</button>
+          <button onClick={onConfirm} style={{ flex: 1, padding: "10px", borderRadius: "6px", fontSize: "12px", fontFamily: "inherit", fontWeight: 700, cursor: "pointer", background: "#238636", color: "#fff", border: "1px solid #2ea043" }}>✅ Haan, Push Karo</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
 // Returns true only if EVERY file path starts with the same "folderName/" prefix.
 function detectWrapperFolder(rawFiles) {
   const fileEntries = rawFiles.filter(f => f.name && !f.name.endsWith("/"));
@@ -582,6 +738,9 @@ function ZipTab({ token, selectedRepo, setSelectedRepo }) {
   const [summary, setSummary] = useState(null);
   const [backupEnabled, setBackupEnabled] = useState(true);
   const [showRestore, setShowRestore] = useState(false);
+  const [showConfirm, setShowConfirm] = useState(false);
+  const [pendingFiles, setPendingFiles] = useState(null);
+  const [progress, setProgress] = useState(null); // { current, total }
   const zipRef = useRef();
 
   const log = (msg, type = "info") => setLogs(prev => [...prev, { msg, type, time: new Date().toLocaleTimeString() }]);
@@ -592,7 +751,8 @@ function ZipTab({ token, selectedRepo, setSelectedRepo }) {
     return parts.length === 2 ? { owner: parts[0], repo: parts[1] } : null;
   };
 
-  const handlePush = async () => {
+  // Step 1: prepare files, show confirm modal
+  const handlePushClick = async () => {
     const parsed = getOwnerRepo();
     if (!parsed) { log("⚠️ Repo select karo!", "error"); return; }
     if (!zipFile) { log("⚠️ ZIP file choose karo!", "error"); return; }
@@ -618,12 +778,43 @@ function ZipTab({ token, selectedRepo, setSelectedRepo }) {
           if (name) decompressed.push({ name, data });
         } catch (e) { log(`⚠️ Skip: ${f.name} — ${e.message}`, "warn"); }
       }
-      log(`✅ ${decompressed.length} files ready`);
+      log(`✅ ${decompressed.length} files ready — confirm karo`);
+      setPendingFiles(decompressed);
+      setStatus("idle");
+      setShowConfirm(true);
+    } catch (e) { log(`❌ ${e.message}`, "error"); setStatus("error"); }
+  };
 
+  // Step 2: actually push, after confirm
+  const handlePush = async () => {
+    setShowConfirm(false);
+    const parsed = getOwnerRepo();
+    const decompressed = pendingFiles;
+    if (!parsed || !decompressed) return;
+
+    setStatus("running"); setProgress(null);
+    try {
+      const vercelCfg = getVercelConfig(parsed.owner, parsed.repo);
       const result = await smartPush({ filesToProcess: decompressed, ...parsed, token, commitMsg, log, backupEnabled });
       setSummary(result);
       setStatus("done");
-    } catch (e) { log(`❌ ${e.message}`, "error"); setStatus("error"); }
+      addHistoryEntry({
+        owner: parsed.owner, repo: parsed.repo, branch: result.branch, commitMsg, source: "zip",
+        prevSha: result.prevSha, newSha: result.newSha,
+        added: result.added, updated: result.updated, skipped: result.skipped,
+        status: result.newSha ? "success" : "no-changes",
+      });
+      if (result.newSha && vercelCfg?.autoRollback) {
+        monitorVercelDeployment({
+          owner: parsed.owner, repo: parsed.repo, branch: result.branch,
+          prevSha: result.prevSha, newSha: result.newSha,
+          githubToken: token, vercelToken: vercelCfg.token, vercelProjectId: vercelCfg.projectId, log,
+        });
+      }
+    } catch (e) {
+      log(`❌ ${e.message}`, "error"); setStatus("error");
+      addHistoryEntry({ owner: parsed.owner, repo: parsed.repo, branch: "", commitMsg, source: "zip", status: "failed", error: e.message });
+    }
   };
 
   const isRunning = status === "running";
@@ -687,15 +878,17 @@ function ZipTab({ token, selectedRepo, setSelectedRepo }) {
 
       <BackupToggle enabled={backupEnabled} setEnabled={setBackupEnabled} onOpenRestorePoints={() => setShowRestore(true)} restoreCount={repoBackupCount} />
 
+      {parsed && <VercelRollbackPanel owner={parsed.owner} repo={parsed.repo} />}
+
       <DiffBadge />
 
-      <button onClick={handlePush} disabled={isRunning || !selectedRepo || !zipFile} style={{
+      <button onClick={handlePushClick} disabled={isRunning || !selectedRepo || !zipFile} style={{
         width: "100%", padding: "14px", borderRadius: "8px", fontSize: "14px", fontWeight: 700, cursor: isRunning || !selectedRepo || !zipFile ? "not-allowed" : "pointer", fontFamily: "inherit",
         background: isRunning || !selectedRepo || !zipFile ? "#161b22" : "#238636",
         color: isRunning || !selectedRepo || !zipFile ? "#6e7681" : "#fff",
         border: "1px solid #2ea043",
       }}>
-        {isRunning ? "⏳ Push ho raha hai..." : "🚀 ZIP Smart Push Karo"}
+        {isRunning ? "⏳ Tayyar ho raha hai..." : "🚀 ZIP Smart Push Karo"}
       </button>
 
       <SummaryCard summary={summary} />
@@ -703,6 +896,13 @@ function ZipTab({ token, selectedRepo, setSelectedRepo }) {
 
       {showRestore && parsed && (
         <RestorePointsModal onClose={() => setShowRestore(false)} owner={parsed.owner} repo={parsed.repo} token={token} />
+      )}
+
+      {showConfirm && parsed && pendingFiles && (
+        <ConfirmPushModal
+          owner={parsed.owner} repo={parsed.repo} branch="" fileCount={pendingFiles.length} commitMsg={commitMsg}
+          onConfirm={handlePush} onCancel={() => { setShowConfirm(false); setStatus("idle"); }}
+        />
       )}
     </div>
   );
@@ -717,6 +917,7 @@ function FilesTab({ token, selectedRepo, setSelectedRepo }) {
   const [summary, setSummary] = useState(null);
   const [backupEnabled, setBackupEnabled] = useState(true);
   const [showRestore, setShowRestore] = useState(false);
+  const [showConfirm, setShowConfirm] = useState(false);
   const filesRef = useRef();
 
   const log = (msg, type = "info") => setLogs(prev => [...prev, { msg, type, time: new Date().toLocaleTimeString() }]);
@@ -738,12 +939,19 @@ function FilesTab({ token, selectedRepo, setSelectedRepo }) {
     e.target.value = "";
   };
 
-  const handlePush = async () => {
+  const handlePushClick = () => {
     const parsed = getOwnerRepo();
     if (!parsed) { log("⚠️ Repo select karo!", "error"); return; }
     if (!indivFiles.length) { log("⚠️ Koi file select nahi!", "error"); return; }
     const emptyPath = indivFiles.find(f => !f.repoPath.trim());
     if (emptyPath) { log(`⚠️ "${emptyPath.file.name}" ka path empty hai!`, "error"); return; }
+    setShowConfirm(true);
+  };
+
+  const handlePush = async () => {
+    setShowConfirm(false);
+    const parsed = getOwnerRepo();
+    if (!parsed) return;
 
     setStatus("running"); setLogs([]); setSummary(null);
     try {
@@ -753,10 +961,27 @@ function FilesTab({ token, selectedRepo, setSelectedRepo }) {
         const data = await readFileAsUint8(file);
         processed.push({ name: repoPath.trim(), data });
       }
+      const vercelCfg = getVercelConfig(parsed.owner, parsed.repo);
       const result = await smartPush({ filesToProcess: processed, ...parsed, token, commitMsg, log, backupEnabled });
       setSummary(result);
       setStatus("done");
-    } catch (e) { log(`❌ ${e.message}`, "error"); setStatus("error"); }
+      addHistoryEntry({
+        owner: parsed.owner, repo: parsed.repo, branch: result.branch, commitMsg, source: "files",
+        prevSha: result.prevSha, newSha: result.newSha,
+        added: result.added, updated: result.updated, skipped: result.skipped,
+        status: result.newSha ? "success" : "no-changes",
+      });
+      if (result.newSha && vercelCfg?.autoRollback) {
+        monitorVercelDeployment({
+          owner: parsed.owner, repo: parsed.repo, branch: result.branch,
+          prevSha: result.prevSha, newSha: result.newSha,
+          githubToken: token, vercelToken: vercelCfg.token, vercelProjectId: vercelCfg.projectId, log,
+        });
+      }
+    } catch (e) {
+      log(`❌ ${e.message}`, "error"); setStatus("error");
+      addHistoryEntry({ owner: parsed.owner, repo: parsed.repo, branch: "", commitMsg, source: "files", status: "failed", error: e.message });
+    }
   };
 
   const isRunning = status === "running";
@@ -826,9 +1051,11 @@ function FilesTab({ token, selectedRepo, setSelectedRepo }) {
 
       <BackupToggle enabled={backupEnabled} setEnabled={setBackupEnabled} onOpenRestorePoints={() => setShowRestore(true)} restoreCount={repoBackupCount} />
 
+      {parsedRepo && <VercelRollbackPanel owner={parsedRepo.owner} repo={parsedRepo.repo} />}
+
       <DiffBadge />
 
-      <button onClick={handlePush} disabled={isRunning || !selectedRepo || !indivFiles.length} style={{
+      <button onClick={handlePushClick} disabled={isRunning || !selectedRepo || !indivFiles.length} style={{
         width: "100%", padding: "14px", borderRadius: "8px", fontSize: "14px", fontWeight: 700, cursor: isRunning || !selectedRepo || !indivFiles.length ? "not-allowed" : "pointer", fontFamily: "inherit",
         background: isRunning || !selectedRepo || !indivFiles.length ? "#161b22" : "#6e40c9",
         color: isRunning || !selectedRepo || !indivFiles.length ? "#6e7681" : "#fff",
@@ -843,11 +1070,121 @@ function FilesTab({ token, selectedRepo, setSelectedRepo }) {
       {showRestore && parsedRepo && (
         <RestorePointsModal onClose={() => setShowRestore(false)} owner={parsedRepo.owner} repo={parsedRepo.repo} token={token} />
       )}
+
+      {showConfirm && parsedRepo && (
+        <ConfirmPushModal
+          owner={parsedRepo.owner} repo={parsedRepo.repo} branch="" fileCount={indivFiles.length} commitMsg={commitMsg}
+          onConfirm={handlePush} onCancel={() => setShowConfirm(false)}
+        />
+      )}
     </div>
   );
 }
 
-// ── Accounts Tab ─────────────────────────────────────────
+// ── Tab 3: Push History ───────────────────────────────────
+function HistoryTab({ token }) {
+  const [history, setHistory] = useState([]);
+  const [filterRepo, setFilterRepo] = useState("");
+  const [reverting, setReverting] = useState(null);
+  const [msg, setMsg] = useState(null);
+
+  useEffect(() => { setHistory(loadHistory()); }, []);
+
+  const repos = Array.from(new Set(history.map(h => `${h.owner}/${h.repo}`))).sort();
+  const filtered = filterRepo ? history.filter(h => `${h.owner}/${h.repo}` === filterRepo) : history;
+
+  const handleRevert = async (h) => {
+    if (!h.prevSha || !h.branch) return;
+    setReverting(h.id); setMsg(null);
+    try {
+      await updateRef(h.owner, h.repo, h.branch, h.prevSha, token, true);
+      setMsg({ ok: true, text: `✅ ${h.owner}/${h.repo}@${h.branch} revert ho gaya → ${h.prevSha.slice(0, 7)}` });
+    } catch (e) {
+      setMsg({ ok: false, text: `❌ ${e.message}` });
+    } finally {
+      setReverting(null);
+    }
+  };
+
+  const handleClear = () => {
+    saveHistory([]);
+    setHistory([]);
+  };
+
+  const statusColor = { success: "#3fb950", "no-changes": "#6e7681", failed: "#f85149" };
+  const statusLabel = { success: "✅ Success", "no-changes": "⏭️ No changes", failed: "❌ Failed" };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div style={{ fontSize: "11px", color: "#8b949e" }}>📜 {filtered.length} push record{filtered.length !== 1 ? "s" : ""}</div>
+        {history.length > 0 && (
+          <button onClick={handleClear} style={{ background: "none", border: "none", color: "#6e7681", cursor: "pointer", fontSize: "11px", fontFamily: "inherit" }}>🗑️ Clear history</button>
+        )}
+      </div>
+
+      {repos.length > 1 && (
+        <select value={filterRepo} onChange={e => setFilterRepo(e.target.value)} style={{ width: "100%", boxSizing: "border-box", background: "#161b22", border: "1px solid #30363d", color: "#c9d1d9", borderRadius: "6px", padding: "9px 12px", fontSize: "12px", outline: "none", fontFamily: "inherit" }}>
+          <option value="">Sabhi repos</option>
+          {repos.map(r => <option key={r} value={r}>{r}</option>)}
+        </select>
+      )}
+
+      {msg && (
+        <div style={{ padding: "10px 12px", borderRadius: "6px", fontSize: "11px", color: msg.ok ? "#3fb950" : "#f85149", background: msg.ok ? "#0d1f0d" : "#2d1416", border: `1px solid ${msg.ok ? "#2ea04344" : "#f8514944"}` }}>
+          {msg.text}
+        </div>
+      )}
+
+      {filtered.length === 0 && (
+        <div style={{ background: "#161b22", border: "1px solid #30363d", borderRadius: "8px", padding: "28px", textAlign: "center" }}>
+          <div style={{ fontSize: "28px", marginBottom: "8px" }}>📜</div>
+          <div style={{ fontSize: "12px", color: "#6e7681" }}>Abhi koi push history nahi hai</div>
+        </div>
+      )}
+
+      {filtered.map(h => (
+        <div key={h.id} style={{ background: "#161b22", border: "1px solid #30363d", borderRadius: "8px", padding: "12px", display: "flex", flexDirection: "column", gap: "7px" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "8px" }}>
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontSize: "12.5px", fontWeight: 700, color: "#f0f6fc", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{h.owner}/{h.repo}</div>
+              <div style={{ fontSize: "10px", color: "#6e7681", marginTop: "1px" }}>{h.branch || "—"} · {h.source === "zip" ? "📦 ZIP" : "🗂️ Files"} · {new Date(h.timestamp).toLocaleString()}</div>
+            </div>
+            <span style={{ fontSize: "10px", fontWeight: 700, color: statusColor[h.status] || "#8b949e", whiteSpace: "nowrap", flexShrink: 0 }}>{statusLabel[h.status] || h.status}</span>
+          </div>
+
+          <div style={{ fontSize: "11px", color: "#8b949e", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>💬 {h.commitMsg}</div>
+
+          {h.status === "success" && (
+            <div style={{ display: "flex", gap: "10px", fontSize: "10.5px", color: "#6e7681" }}>
+              <span style={{ color: "#3fb950" }}>🆕 {h.added}</span>
+              <span style={{ color: "#e3b341" }}>✏️ {h.updated}</span>
+              <span>⏭️ {h.skipped}</span>
+              {h.newSha && <span>· <code>{h.newSha.slice(0, 7)}</code></span>}
+            </div>
+          )}
+          {h.status === "failed" && h.error && (
+            <div style={{ fontSize: "10.5px", color: "#f85149" }}>{h.error}</div>
+          )}
+
+          {h.status === "success" && h.prevSha && h.branch && (
+            <button
+              onClick={() => handleRevert(h)}
+              disabled={reverting === h.id}
+              style={{ alignSelf: "flex-start", background: "#21262d", border: "1px solid #30363d", color: "#e3b341", borderRadius: "6px", padding: "6px 10px", fontSize: "11px", cursor: reverting === h.id ? "not-allowed" : "pointer", fontFamily: "inherit", fontWeight: 600 }}
+            >
+              {reverting === h.id ? "⏳..." : `⏪ Is push se pehle wapas jao (${h.prevSha.slice(0, 7)})`}
+            </button>
+          )}
+        </div>
+      ))}
+
+      <div style={{ fontSize: "10px", color: "#484f58", textAlign: "center", padding: "4px" }}>⚠️ Revert branch ko force-update karta hai — uske baad ke commits overwrite ho jaayenge.</div>
+    </div>
+  );
+}
+
+
 function AccountsTab({ activeAccountId, setActiveAccountId, accounts, setAccounts }) {
   const [showAdd, setShowAdd] = useState(false);
   const [label, setLabel] = useState("");
@@ -1243,6 +1580,7 @@ export default function ZipPusherPage() {
   const tabs = [
     { id: "zip", label: "ZIP Push", icon: "📦" },
     { id: "files", label: "Files Push", icon: "🗂️" },
+    { id: "history", label: "History", icon: "📜" },
   ];
 
   return (
@@ -1363,6 +1701,7 @@ export default function ZipPusherPage() {
         )}
         {activeTab === "zip" && token && <ZipTab token={token} selectedRepo={selectedRepo} setSelectedRepo={setSelectedRepo} />}
         {activeTab === "files" && token && <FilesTab token={token} selectedRepo={selectedRepo} setSelectedRepo={setSelectedRepo} />}
+        {activeTab === "history" && token && <HistoryTab token={token} />}
       </div>
 
       {/* Bottom Nav */}
