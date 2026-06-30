@@ -402,7 +402,24 @@ async function fetchVercelDeployments(token, projectId, teamId, limit = 8) {
   return data.deployments || [];
 }
 
-// Existing project ka latest deployment clone karke fresh deploy trigger karta
+// Deployment ke build/error logs fetch karta hai (Vercel "events" API) — jab
+// deployment ERROR state mein ho, ye function us deployment ke poore build
+// output ko text lines mein nikaal ke deta hai taaki user dekh/copy kar sake.
+async function fetchVercelDeploymentLogs(token, deploymentId, teamId) {
+  const qs = teamId ? `&teamId=${encodeURIComponent(teamId)}` : "";
+  const res = await fetch(`${VERCEL_API}/v3/deployments/${deploymentId}/events?direction=forward&limit=1000${qs}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error("Logs fetch nahi hue");
+  const data = await res.json();
+  const events = Array.isArray(data) ? data : (data.events || []);
+  return events
+    .map(e => (typeof e.payload?.text === "string" ? e.payload.text : (typeof e.text === "string" ? e.text : "")))
+    .filter(Boolean)
+    .join("\n");
+}
+
+
 // hai — taaki env variable add/update/delete karne ke baad naya value/build
 // live ho jaaye (warna purana build hi serve hota rehta hai).
 async function triggerVercelRedeploy(token, project, teamId) {
@@ -1712,6 +1729,50 @@ function DeploymentStatusPanel({ token, project, teamId }) {
   const [error, setError] = useState("");
   const pollRef = useRef(null);
 
+  // Error deployment ke logs ka expand/fetch/copy state — uid se keyed taaki
+  // ek time par multiple deployments ke logs alag-alag track ho sakein.
+  const [expandedLogId, setExpandedLogId] = useState(null);
+  const [logsById, setLogsById] = useState({});
+  const [logsLoadingId, setLogsLoadingId] = useState(null);
+  const [logsErrorId, setLogsErrorId] = useState({});
+  const [copiedId, setCopiedId] = useState(null);
+
+  const toggleLogs = async (d) => {
+    if (expandedLogId === d.uid) { setExpandedLogId(null); return; }
+    setExpandedLogId(d.uid);
+    if (logsById[d.uid]) return; // already fetched, cache se dikha do
+    setLogsLoadingId(d.uid);
+    setLogsErrorId(prev => ({ ...prev, [d.uid]: "" }));
+    try {
+      const text = await fetchVercelDeploymentLogs(token, d.uid, teamId);
+      setLogsById(prev => ({ ...prev, [d.uid]: text || "(Koi log text nahi mila)" }));
+    } catch (e) {
+      setLogsErrorId(prev => ({ ...prev, [d.uid]: e.message }));
+    } finally {
+      setLogsLoadingId(null);
+    }
+  };
+
+  const copyLogs = async (d) => {
+    const text = logsById[d.uid] || "";
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedId(d.uid);
+      setTimeout(() => setCopiedId(null), 2000);
+    } catch {
+      // clipboard API blocked ho sakta hai (http/permission) — fallback textarea trick
+      try {
+        const ta = document.createElement("textarea");
+        ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
+        document.body.appendChild(ta); ta.focus(); ta.select();
+        document.execCommand("copy");
+        document.body.removeChild(ta);
+        setCopiedId(d.uid);
+        setTimeout(() => setCopiedId(null), 2000);
+      } catch {}
+    }
+  };
+
   const load = async () => {
     try {
       const list = await fetchVercelDeployments(token, project.id, teamId, 8);
@@ -1785,6 +1846,44 @@ function DeploymentStatusPanel({ token, project, teamId }) {
                 </a>
               )}
             </div>
+
+            {state === "ERROR" && (
+              <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                <button
+                  onClick={() => toggleLogs(d)}
+                  style={{ alignSelf: "flex-start", padding: "4px 9px", borderRadius: "5px", fontSize: "10px", fontFamily: "inherit", fontWeight: 600, cursor: "pointer", background: "#21262d", color: "#f85149", border: "1px solid #30363d" }}
+                >
+                  {expandedLogId === d.uid ? "▲ Logs chhupao" : "📋 Error Logs dekho"}
+                </button>
+
+                {expandedLogId === d.uid && (
+                  <div style={{ background: "#010409", border: "1px solid #30363d", borderRadius: "6px", padding: "8px" }}>
+                    {logsLoadingId === d.uid && (
+                      <div style={{ fontSize: "10.5px", color: "#6e7681" }}>⏳ Logs load ho rahe hain…</div>
+                    )}
+                    {logsErrorId[d.uid] && (
+                      <div style={{ fontSize: "10.5px", color: "#f85149" }}>⚠️ {logsErrorId[d.uid]}</div>
+                    )}
+                    {!logsLoadingId && logsById[d.uid] && (
+                      <>
+                        <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: "6px" }}>
+                          <button
+                            onClick={() => copyLogs(d)}
+                            style={{ padding: "4px 9px", borderRadius: "5px", fontSize: "10px", fontFamily: "inherit", fontWeight: 600, cursor: "pointer", background: copiedId === d.uid ? "#238636" : "#21262d", color: copiedId === d.uid ? "#fff" : "#58a6ff", border: "1px solid #30363d" }}
+                          >
+                            {copiedId === d.uid ? "✅ Copied!" : "📄 Copy Logs"}
+                          </button>
+                        </div>
+                        <pre style={{ margin: 0, maxHeight: "260px", overflowY: "auto", fontSize: "10px", lineHeight: 1.5, color: "#c9d1d9", whiteSpace: "pre-wrap", wordBreak: "break-word", fontFamily: "monospace" }}>
+                          {logsById[d.uid]}
+                        </pre>
+                      </>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+
           </div>
         );
       })}
