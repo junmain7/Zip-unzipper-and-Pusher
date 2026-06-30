@@ -7,6 +7,13 @@ import {
   fetchVercelEnvValue, fetchVercelDeployments, fetchVercelDeploymentLogs, triggerVercelRedeploy,
 } from "../../lib/vercel";
 
+const VERCEL_API = "https://api.vercel.com";
+const VERCEL_TARGETS = [
+  ["production", "Production"],
+  ["preview", "Preview"],
+  ["development", "Development"],
+];
+
 function statusMeta(state) {
   switch (state) {
     case "READY": return { label: "Ready", color: "#3fb950", bg: "rgba(63,185,80,0.12)", icon: "✅" };
