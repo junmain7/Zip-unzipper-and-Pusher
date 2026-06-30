@@ -1,15 +1,17 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
-import { readFileAsArrayBuffer, parseZip, decompressFile, detectWrapperFolder, stripAllWrapperLevels } from "../../lib/zip";
+import { readFileAsArrayBuffer, parseZip, decompressFile, detectWrapperFolder, stripAllWrapperLevels, getWrapperChain, stripExactLevels } from "../../lib/zip";
 import { smartPush, computeDiff, pushDiff, fetchRepoFolders } from "../../lib/github";
 import { loadBackups, addHistoryEntry } from "../../lib/storage";
 import { RepoSelector, LogsPanel, SummaryCard, DiffBadge, BackupToggle, RestorePointsModal, ConfirmPushModal } from "./PushShared";
 
 export default function ZipTab({ token, selectedRepo, setSelectedRepo }) {
   const [zipFile, setZipFile] = useState(null);
-  const [stripOverride, setStripOverride] = useState(null); // null = auto, true/false = manual override
-  const [detectedWrapper, setDetectedWrapper] = useState(null); // null = not yet checked
+  const [manualLevel, setManualLevel] = useState(null); // null = auto, number = user-chosen exact strip depth
+  const [wrapperChain, setWrapperChain] = useState(null); // full possible nesting chain: [{name, fileCount}, ...]
+  const [autoLevel, setAutoLevel] = useState(0); // auto-detected strip depth, used as default highlight
+  const [rawZipFiles, setRawZipFiles] = useState(null); // parsed zip entries (names only) — used to compute root preview
   const [commitMsg, setCommitMsg] = useState("Smart diff update via ZIP pusher");
   const [logs, setLogs] = useState([]);
   const [status, setStatus] = useState("idle");
@@ -76,25 +78,20 @@ export default function ZipTab({ token, selectedRepo, setSelectedRepo }) {
       }
 
       // Strip karne se pehle decompress kiya — taaki nested wrapper levels
-      // (jaise "Wrapper/RepoName/app/page.js") sahi se detect ho sakein,
-      // ek se zyada level strip karne ki zaroorat ho to woh bhi ho jaaye.
+      // (jaise "Wrapper/RepoName/app/page.js") sahi se detect ho sakein.
+      // Agar user ne manually exact level select kiya hai (chain se), to
+      // wahi use karo — chahe auto-detect kuch bhi kahe. Warna auto-detect
+      // (repo ke actual root folders se compare karke) khud decide karega.
       let decompressed;
-      if (stripOverride === false) {
-        decompressed = rawDecompressed; // manual override: strip mat karo
-      } else if (stripOverride === true) {
-        // manual override: kam se kam ek level zaroor strip karo, phir
-        // baaki nested levels auto-detect se strip ho jaayenge
-        const onceStripped = rawDecompressed
-          .map(f => { const s = f.name.indexOf("/"); return s !== -1 ? { ...f, name: f.name.slice(s + 1) } : f; })
-          .filter(f => f.name);
-        const { files, levelsStripped } = stripAllWrapperLevels(onceStripped, repoRootFolders);
-        decompressed = files;
-        if (levelsStripped > 0) log(`📁 ${levelsStripped} aur nested wrapper level(s) bhi strip kiye`);
+      if (manualLevel !== null) {
+        decompressed = stripExactLevels(rawDecompressed, manualLevel);
+        log(manualLevel > 0 ? `📁 Manually ${manualLevel} level(s) strip kiye` : `📁 Manual: koi strip nahi kiya, paths as-is`);
       } else {
-        const { files, levelsStripped } = stripAllWrapperLevels(rawDecompressed, repoRootFolders);
+        const { files, levelsStripped, strippedFolderNames } = stripAllWrapperLevels(rawDecompressed, repoRootFolders);
         decompressed = files;
-        if (levelsStripped > 1) log(`📁 ${levelsStripped} nested wrapper levels strip kiye`);
+        if (levelsStripped > 0) log(`📁 ${levelsStripped} wrapper level(s) strip kiye: ${strippedFolderNames.join(" → ")}`);
       }
+
 
       log(`✅ ${decompressed.length} files ready — confirm karo`);
       setPendingFiles(decompressed);
@@ -160,39 +157,86 @@ export default function ZipTab({ token, selectedRepo, setSelectedRepo }) {
         <input ref={zipRef} type="file" accept=".zip" style={{ display: "none" }} onChange={async e => {
           const f = e.target.files[0] || null;
           setZipFile(f);
-          setStripOverride(null);
-          setDetectedWrapper(null);
+          setManualLevel(null);
+          setWrapperChain(null);
+          setRawZipFiles(null);
           if (f) {
             try {
               const buffer = await readFileAsArrayBuffer(f);
               const rawFiles = parseZip(buffer);
-              setDetectedWrapper(detectWrapperFolder(rawFiles, repoRootFolders));
-            } catch { setDetectedWrapper(null); }
+              const names = rawFiles.map(rf => ({ name: rf.name }));
+              setRawZipFiles(names);
+              setWrapperChain(getWrapperChain(names));
+              setAutoLevel(stripAllWrapperLevels(names, repoRootFolders).levelsStripped);
+            } catch { setWrapperChain(null); }
           }
         }} />
       </div>
 
       <div style={{ padding: "10px 12px", background: "#161b22", border: "1px solid #30363d", borderRadius: "6px" }}>
-        {detectedWrapper === null ? (
-          <div style={{ fontSize: "12px", color: "#6e7681" }}>📁 ZIP select karo — wrapper folder auto-detect ho jayega</div>
-        ) : (
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "10px" }}>
+        {!wrapperChain || !rawZipFiles ? (
+          <div style={{ fontSize: "12px", color: "#6e7681" }}>📁 ZIP select karo — folder structure dikhega yahan</div>
+        ) : (() => {
+          const selectedLevel = manualLevel !== null ? manualLevel : autoLevel;
+          const previewFiles = stripExactLevels(rawZipFiles, selectedLevel);
+          const sampleRoots = [...new Set(previewFiles.map(f => f.name.split("/")[0]))].slice(0, 6);
+
+          return (
             <div>
-              <div style={{ fontSize: "12px", color: "#c9d1d9" }}>
-                {detectedWrapper ? "✅ Wrapper folder mila — auto-strip hoga" : "✅ Koi wrapper folder nahi — paths as-is rahenge"}
+              <div style={{ fontSize: "11px", color: "#8b949e", marginBottom: "8px" }}>
+                📂 Kahan tak strip karna hai, level choose karo {manualLevel === null && <span style={{ color: "#58a6ff" }}>(auto-selected)</span>}
               </div>
-              <div style={{ fontSize: "10px", color: "#6e7681" }}>
-                {stripOverride === null ? "Auto-detected" : `Manual override: ${stripOverride ? "strip karo" : "strip mat karo"}`}
+
+              <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", marginBottom: "10px" }}>
+                {/* Level 0 = strip kuch nahi, as-is */}
+                <button
+                  onClick={() => setManualLevel(0)}
+                  style={{
+                    fontSize: "10.5px", padding: "6px 10px", borderRadius: "6px", cursor: "pointer", fontFamily: "inherit", fontWeight: 600,
+                    background: selectedLevel === 0 ? "#1f6feb" : "#0d1117",
+                    color: selectedLevel === 0 ? "#fff" : "#8b949e",
+                    border: selectedLevel === 0 ? "1px solid #1f6feb" : "1px solid #30363d",
+                  }}
+                >
+                  🚫 Strip nahi (root)
+                </button>
+                {wrapperChain.map((level, i) => {
+                  const lvl = i + 1;
+                  const isSelected = selectedLevel === lvl;
+                  const isAutoDefault = manualLevel === null && autoLevel === lvl;
+                  return (
+                    <button
+                      key={i}
+                      onClick={() => setManualLevel(lvl)}
+                      style={{
+                        fontSize: "10.5px", padding: "6px 10px", borderRadius: "6px", cursor: "pointer", fontFamily: "inherit", fontWeight: 600,
+                        background: isSelected ? "#1f6feb" : "#0d1117",
+                        color: isSelected ? "#fff" : "#8b949e",
+                        border: isSelected ? "1px solid #1f6feb" : (isAutoDefault ? "1px solid #58a6ff" : "1px solid #30363d"),
+                      }}
+                      title={`${level.fileCount} files is folder ke andar`}
+                    >
+                      {lvl}. {level.name}/
+                    </button>
+                  );
+                })}
+              </div>
+
+              {manualLevel !== null && (
+                <button
+                  onClick={() => setManualLevel(null)}
+                  style={{ fontSize: "10px", color: "#58a6ff", background: "transparent", border: "none", padding: "0 0 8px 0", cursor: "pointer", fontFamily: "inherit", textDecoration: "underline" }}
+                >
+                  ↺ Reset to auto ({autoLevel} level{autoLevel === 1 ? "" : "s"})
+                </button>
+              )}
+
+              <div style={{ fontSize: "10px", color: "#3fb950" }}>
+                📍 Is selection se sahi root milega: <span style={{ color: "#c9d1d9" }}>{sampleRoots.join(", ") || "(empty)"}</span>
               </div>
             </div>
-            <button
-              onClick={() => setStripOverride(p => p === null ? !detectedWrapper : null)}
-              style={{ fontSize: "10px", color: "#58a6ff", background: "transparent", border: "1px solid #30363d", borderRadius: "5px", padding: "5px 8px", cursor: "pointer", fontFamily: "inherit" }}
-            >
-              {stripOverride === null ? "Override" : "Reset to auto"}
-            </button>
-          </div>
-        )}
+          );
+        })()}
       </div>
 
       <BackupToggle enabled={backupEnabled} setEnabled={setBackupEnabled} onOpenRestorePoints={() => setShowRestore(true)} restoreCount={repoBackupCount} />
