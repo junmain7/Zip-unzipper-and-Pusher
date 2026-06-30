@@ -25,7 +25,7 @@ export const viewport = {
 export default function RootLayout({ children }) {
   return (
     <html lang="en" style={{ overflowX: "hidden", width: "100%" }}>
-      <body style={{ margin: 0, overflowX: "hidden", width: "100%", maxWidth: "100vw" }}>
+      <body style={{ margin: 0, overflowX: "hidden", overflowY: "hidden", overscrollBehavior: "none", width: "100%", maxWidth: "100vw", height: "100dvh" }}>
         <Providers>{children}</Providers>
         <script
           dangerouslySetInnerHTML={{

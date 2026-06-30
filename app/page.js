@@ -112,7 +112,7 @@ export default function ZipPusherPage() {
   ];
 
   return (
-    <div style={{ minHeight: "100vh", background: "#0d1117", color: "#c9d1d9", fontFamily: "'JetBrains Mono','Fira Code',monospace", display: "flex", flexDirection: "column" }}>
+    <div style={{ height: "100dvh", maxHeight: "100dvh", background: "#0d1117", color: "#c9d1d9", fontFamily: "'JetBrains Mono','Fira Code',monospace", display: "flex", flexDirection: "column", overflow: "hidden" }}>
 
 
       {/* Header */}
