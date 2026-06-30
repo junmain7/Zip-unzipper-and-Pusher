@@ -15,6 +15,26 @@ function loadActiveId() { return localStorage.getItem(ACTIVE_KEY) || null; }
 function saveActiveId(id) { if (id) localStorage.setItem(ACTIVE_KEY, id); else localStorage.removeItem(ACTIVE_KEY); }
 function maskPat(pat) { if (!pat || pat.length < 8) return "••••••••"; return pat.slice(0, 4) + "••••••" + pat.slice(-4); }
 
+// ── Backup / Restore-point Storage ────────────────────────
+const BACKUPS_KEY = "ghpusher_backups";
+function loadBackups() { try { return JSON.parse(localStorage.getItem(BACKUPS_KEY) || "[]"); } catch { return []; } }
+function saveBackups(b) { localStorage.setItem(BACKUPS_KEY, JSON.stringify(b)); }
+function addBackup(record) {
+  const all = loadBackups();
+  all.unshift({ id: Math.random().toString(36).slice(2), ...record });
+  // keep only last 8 restore points per owner/repo/branch to avoid bloat
+  const key = `${record.owner}/${record.repo}@${record.branch}`;
+  let countForKey = 0;
+  const trimmed = all.filter(b => {
+    const k = `${b.owner}/${b.repo}@${b.branch}`;
+    if (k !== key) return true;
+    countForKey++;
+    return countForKey <= 8;
+  });
+  saveBackups(trimmed);
+  return trimmed;
+}
+
 
 // ── Helpers ──────────────────────────────────────────────
 function uint8ToBase64(bytes) {
@@ -191,23 +211,44 @@ async function createCommit(owner, repo, message, treeSha, parentSha, token) {
   return (await res.json()).sha;
 }
 
-async function updateRef(owner, repo, branch, commitSha, token) {
+async function updateRef(owner, repo, branch, commitSha, token, force = false) {
   const res = await fetch(`${GITHUB_API}/repos/${owner}/${repo}/git/refs/heads/${branch}`, {
     method: "PATCH",
     headers: { Authorization: `token ${token}`, Accept: "application/vnd.github.v3+json", "Content-Type": "application/json" },
-    body: JSON.stringify({ sha: commitSha, force: false }),
+    body: JSON.stringify({ sha: commitSha, force }),
   });
   if (!res.ok) { const e = await res.json(); throw new Error(`Ref update error: ${e.message}`); }
 }
 
+async function downloadRepoZip(owner, repo, branch, token) {
+  const res = await fetch(`${GITHUB_API}/repos/${owner}/${repo}/zipball/${branch}`, {
+    headers: { Authorization: `token ${token}`, Accept: "application/vnd.github.v3+json" },
+  });
+  if (!res.ok) throw new Error(`ZIP download error: ${res.status}`);
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `${repo}-${branch}.zip`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
 // ── Shared Push Logic ─────────────────────────────────────
-async function smartPush({ filesToProcess, owner, repo, token, commitMsg, log }) {
+async function smartPush({ filesToProcess, owner, repo, token, commitMsg, log, backupEnabled }) {
   log(`🌐 Repo check kar raha hai...`);
   const branch = await getDefaultBranch(owner, repo, token);
   log(`✅ Branch: ${branch}`);
 
   const latestSha = await getLatestCommitSha(owner, repo, branch, token);
   log(`✅ Latest commit: ${latestSha.slice(0, 7)}`);
+
+  if (backupEnabled) {
+    addBackup({ owner, repo, branch, sha: latestSha, timestamp: Date.now(), label: commitMsg });
+    log(`📦 Backup point saved: ${latestSha.slice(0, 7)} (revert ke liye use hoga)`);
+  }
 
   const baseTreeSha = await getTreeSha(owner, repo, latestSha, token);
 
@@ -268,6 +309,8 @@ function RepoSelector({ token, selectedRepo, setSelectedRepo }) {
   const [newName, setNewName] = useState("");
   const [newPrivate, setNewPrivate] = useState(false);
   const [creating, setCreating] = useState(false);
+  const [downloading, setDownloading] = useState(false);
+  const [downloadErr, setDownloadErr] = useState("");
 
   const loadRepos = async () => {
     setLoading(true);
@@ -289,6 +332,17 @@ function RepoSelector({ token, selectedRepo, setSelectedRepo }) {
       setRepoMode("existing");
     } catch (e) { alert(e.message); }
     finally { setCreating(false); }
+  };
+
+  const handleDownload = async () => {
+    if (!selectedRepo) return;
+    const [owner, repo] = selectedRepo.split("/");
+    setDownloading(true); setDownloadErr("");
+    try {
+      const branch = await getDefaultBranch(owner, repo, token);
+      await downloadRepoZip(owner, repo, branch, token);
+    } catch (e) { setDownloadErr(e.message); }
+    finally { setDownloading(false); }
   };
 
   const inp = { width: "100%", boxSizing: "border-box", background: "#161b22", border: "1px solid #30363d", color: "#c9d1d9", borderRadius: "6px", padding: "9px 12px", fontSize: "12px", outline: "none", fontFamily: "inherit" };
@@ -326,6 +380,15 @@ function RepoSelector({ token, selectedRepo, setSelectedRepo }) {
                   <span style={{ fontSize: "10px", color: "#6e7681" }}>{r.private ? "🔒" : "🌐"}</span>
                 </div>
               ))}
+            </div>
+          )}
+
+          {selectedRepo && (
+            <div style={{ marginTop: "8px" }}>
+              <button onClick={handleDownload} disabled={downloading} style={{ width: "100%", padding: "8px", borderRadius: "6px", fontSize: "11.5px", fontWeight: 600, cursor: downloading ? "not-allowed" : "pointer", fontFamily: "inherit", background: "#0d1117", color: downloading ? "#6e7681" : "#58a6ff", border: "1px solid #30363d", display: "flex", alignItems: "center", justifyContent: "center", gap: "8px" }}>
+                {downloading ? "⏳ Tayyar ho raha hai..." : "⬇️ Repo ko ZIP mein download karo"}
+              </button>
+              {downloadErr && <div style={{ fontSize: "10px", color: "#f85149", marginTop: "4px", textAlign: "center" }}>❌ {downloadErr}</div>}
             </div>
           )}
         </div>
@@ -396,7 +459,95 @@ function DiffBadge() {
   );
 }
 
-// ── Tab 1: ZIP Pusher ─────────────────────────────────────
+// Backup Toggle (shared across tabs)
+function BackupToggle({ enabled, setEnabled, onOpenRestorePoints, restoreCount }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: "10px", padding: "10px 12px", background: "#161b22", border: "1px solid #30363d", borderRadius: "6px" }}>
+      <div onClick={() => setEnabled(p => !p)} style={{ display: "flex", alignItems: "center", gap: "10px", cursor: "pointer", flex: 1 }}>
+        <div style={{ width: "36px", height: "20px", borderRadius: "10px", background: enabled ? "#1f6feb" : "#30363d", position: "relative", flexShrink: 0 }}>
+          <div style={{ position: "absolute", top: "3px", left: enabled ? "18px" : "3px", width: "14px", height: "14px", borderRadius: "50%", background: "#fff", transition: "left 0.2s" }} />
+        </div>
+        <div>
+          <div style={{ fontSize: "12px", color: "#c9d1d9" }}>📦 Backup before push</div>
+          <div style={{ fontSize: "10px", color: "#6e7681" }}>Push se pehle ka commit save hoga, baad mein revert kar sakte ho</div>
+        </div>
+      </div>
+      <button onClick={onOpenRestorePoints} style={{ background: "#0d1117", border: "1px solid #30363d", borderRadius: "6px", padding: "7px 10px", fontSize: "11px", color: "#58a6ff", cursor: "pointer", fontFamily: "inherit", flexShrink: 0, whiteSpace: "nowrap" }}>
+        🕐 Restore{restoreCount ? ` (${restoreCount})` : ""}
+      </button>
+    </div>
+  );
+}
+
+// Restore Points Modal — revert a repo's branch back to a saved pre-push commit
+function RestorePointsModal({ onClose, owner, repo, token }) {
+  const [backups, setBackups] = useState([]);
+  const [reverting, setReverting] = useState(null);
+  const [doneMsg, setDoneMsg] = useState("");
+  const [errMsg, setErrMsg] = useState("");
+
+  useEffect(() => {
+    const all = loadBackups();
+    setBackups(all.filter(b => b.owner === owner && b.repo === repo));
+  }, [owner, repo]);
+
+  const handleRevert = async (b) => {
+    setReverting(b.id); setDoneMsg(""); setErrMsg("");
+    try {
+      await updateRef(b.owner, b.repo, b.branch, b.sha, token, true);
+      setDoneMsg(`✅ ${b.repo}@${b.branch} revert ho gaya → ${b.sha.slice(0, 7)}`);
+    } catch (e) {
+      setErrMsg(`❌ ${e.message}`);
+    } finally {
+      setReverting(null);
+    }
+  };
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center", padding: "16px" }} onClick={onClose}>
+      <div onClick={e => e.stopPropagation()} style={{ background: "#161b22", border: "1px solid #30363d", borderRadius: "12px", width: "100%", maxWidth: "380px", maxHeight: "78vh", display: "flex", flexDirection: "column", overflow: "hidden" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "14px 16px", borderBottom: "1px solid #21262d", flexShrink: 0 }}>
+          <div style={{ fontSize: "14px", fontWeight: 700, color: "#f0f6fc" }}>🕐 Restore Points</div>
+          <button onClick={onClose} style={{ background: "none", border: "none", color: "#6e7681", fontSize: "18px", cursor: "pointer" }}>✕</button>
+        </div>
+
+        {(doneMsg || errMsg) && (
+          <div style={{ padding: "10px 16px", fontSize: "11px", color: doneMsg ? "#3fb950" : "#f85149", borderBottom: "1px solid #21262d" }}>{doneMsg || errMsg}</div>
+        )}
+
+        <div style={{ overflowY: "auto", flex: 1 }}>
+          {backups.length === 0 && (
+            <div style={{ padding: "28px 16px", textAlign: "center", fontSize: "12px", color: "#6e7681" }}>
+              Is repo ke liye koi backup nahi hai.<br />"📦 Backup before push" on karke push karo.
+            </div>
+          )}
+          {backups.map(b => (
+            <div key={b.id} style={{ padding: "11px 16px", borderBottom: "1px solid #21262d", display: "flex", alignItems: "center", gap: "10px" }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: "12px", color: "#f0f6fc", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{b.label || "Push"}</div>
+                <div style={{ fontSize: "10px", color: "#6e7681", marginTop: "2px" }}>
+                  {b.branch} · <code>{b.sha.slice(0, 7)}</code> · {new Date(b.timestamp).toLocaleString()}
+                </div>
+              </div>
+              <button
+                onClick={() => handleRevert(b)}
+                disabled={reverting === b.id}
+                style={{ background: "#21262d", border: "1px solid #30363d", color: "#e3b341", borderRadius: "6px", padding: "6px 10px", fontSize: "11px", cursor: reverting === b.id ? "not-allowed" : "pointer", fontFamily: "inherit", fontWeight: 600, flexShrink: 0 }}
+              >
+                {reverting === b.id ? "⏳..." : "⏪ Revert"}
+              </button>
+            </div>
+          ))}
+        </div>
+        <div style={{ padding: "9px 16px", fontSize: "10px", color: "#484f58", borderTop: "1px solid #21262d", flexShrink: 0 }}>
+          ⚠️ Revert branch ko force-update karta hai — uske baad ke commits/pushes overwrite ho jaayenge.
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
 function ZipTab({ token, selectedRepo, setSelectedRepo }) {
   const [zipFile, setZipFile] = useState(null);
   const [stripRoot, setStripRoot] = useState(true);
@@ -404,6 +555,8 @@ function ZipTab({ token, selectedRepo, setSelectedRepo }) {
   const [logs, setLogs] = useState([]);
   const [status, setStatus] = useState("idle");
   const [summary, setSummary] = useState(null);
+  const [backupEnabled, setBackupEnabled] = useState(true);
+  const [showRestore, setShowRestore] = useState(false);
   const zipRef = useRef();
 
   const log = (msg, type = "info") => setLogs(prev => [...prev, { msg, type, time: new Date().toLocaleTimeString() }]);
@@ -438,7 +591,7 @@ function ZipTab({ token, selectedRepo, setSelectedRepo }) {
       }
       log(`✅ ${decompressed.length} files ready`);
 
-      const result = await smartPush({ filesToProcess: decompressed, ...parsed, token, commitMsg, log });
+      const result = await smartPush({ filesToProcess: decompressed, ...parsed, token, commitMsg, log, backupEnabled });
       setSummary(result);
       setStatus("done");
     } catch (e) { log(`❌ ${e.message}`, "error"); setStatus("error"); }
@@ -446,6 +599,8 @@ function ZipTab({ token, selectedRepo, setSelectedRepo }) {
 
   const isRunning = status === "running";
   const inp = { width: "100%", boxSizing: "border-box", background: "#161b22", border: "1px solid #30363d", color: "#c9d1d9", borderRadius: "6px", padding: "9px 12px", fontSize: "12px", outline: "none", fontFamily: "inherit" };
+  const parsed = getOwnerRepo();
+  const repoBackupCount = parsed ? loadBackups().filter(b => b.owner === parsed.owner && b.repo === parsed.repo).length : 0;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
@@ -476,6 +631,8 @@ function ZipTab({ token, selectedRepo, setSelectedRepo }) {
         </div>
       </div>
 
+      <BackupToggle enabled={backupEnabled} setEnabled={setBackupEnabled} onOpenRestorePoints={() => setShowRestore(true)} restoreCount={repoBackupCount} />
+
       <DiffBadge />
 
       <button onClick={handlePush} disabled={isRunning || !selectedRepo || !zipFile} style={{
@@ -489,6 +646,10 @@ function ZipTab({ token, selectedRepo, setSelectedRepo }) {
 
       <SummaryCard summary={summary} />
       <LogsPanel logs={logs} />
+
+      {showRestore && parsed && (
+        <RestorePointsModal onClose={() => setShowRestore(false)} owner={parsed.owner} repo={parsed.repo} token={token} />
+      )}
     </div>
   );
 }
@@ -500,6 +661,8 @@ function FilesTab({ token, selectedRepo, setSelectedRepo }) {
   const [logs, setLogs] = useState([]);
   const [status, setStatus] = useState("idle");
   const [summary, setSummary] = useState(null);
+  const [backupEnabled, setBackupEnabled] = useState(true);
+  const [showRestore, setShowRestore] = useState(false);
   const filesRef = useRef();
 
   const log = (msg, type = "info") => setLogs(prev => [...prev, { msg, type, time: new Date().toLocaleTimeString() }]);
@@ -536,7 +699,7 @@ function FilesTab({ token, selectedRepo, setSelectedRepo }) {
         const data = await readFileAsUint8(file);
         processed.push({ name: repoPath.trim(), data });
       }
-      const result = await smartPush({ filesToProcess: processed, ...parsed, token, commitMsg, log });
+      const result = await smartPush({ filesToProcess: processed, ...parsed, token, commitMsg, log, backupEnabled });
       setSummary(result);
       setStatus("done");
     } catch (e) { log(`❌ ${e.message}`, "error"); setStatus("error"); }
@@ -544,6 +707,8 @@ function FilesTab({ token, selectedRepo, setSelectedRepo }) {
 
   const isRunning = status === "running";
   const inp = { width: "100%", boxSizing: "border-box", background: "#161b22", border: "1px solid #30363d", color: "#c9d1d9", borderRadius: "6px", padding: "9px 12px", fontSize: "12px", outline: "none", fontFamily: "inherit" };
+  const parsedRepo = getOwnerRepo();
+  const repoBackupCount = parsedRepo ? loadBackups().filter(b => b.owner === parsedRepo.owner && b.repo === parsedRepo.repo).length : 0;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
@@ -605,6 +770,8 @@ function FilesTab({ token, selectedRepo, setSelectedRepo }) {
         </div>
       )}
 
+      <BackupToggle enabled={backupEnabled} setEnabled={setBackupEnabled} onOpenRestorePoints={() => setShowRestore(true)} restoreCount={repoBackupCount} />
+
       <DiffBadge />
 
       <button onClick={handlePush} disabled={isRunning || !selectedRepo || !indivFiles.length} style={{
@@ -618,6 +785,10 @@ function FilesTab({ token, selectedRepo, setSelectedRepo }) {
 
       <SummaryCard summary={summary} />
       <LogsPanel logs={logs} />
+
+      {showRestore && parsedRepo && (
+        <RestorePointsModal onClose={() => setShowRestore(false)} owner={parsedRepo.owner} repo={parsedRepo.repo} token={token} />
+      )}
     </div>
   );
 }
