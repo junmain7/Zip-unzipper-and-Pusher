@@ -757,8 +757,74 @@ function AddAccountModal({ onClose, accounts, setAccounts, setActiveAccountId, a
   const [patVisible, setPatVisible] = useState(false);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState(null);
+  const [connecting, setConnecting] = useState(false);
+  const [connectError, setConnectError] = useState("");
+  const popupRef = useRef(null);
 
   const inp = { width: "100%", boxSizing: "border-box", background: "#0d1117", border: "1px solid #30363d", color: "#c9d1d9", borderRadius: "6px", padding: "9px 12px", fontSize: "12px", outline: "none", fontFamily: "inherit" };
+
+  const upsertAccount = ({ login, name, avatar, pat }) => {
+    const existing = accounts.find(a => a.login === login);
+    let updated;
+    let id;
+    if (existing) {
+      id = existing.id;
+      updated = accounts.map(a => a.id === existing.id ? { ...a, pat, avatar, label: a.label || name || login } : a);
+    } else {
+      id = Math.random().toString(36).slice(2);
+      updated = [...accounts, { id, label: name || login, pat, login, avatar }];
+    }
+    saveAccounts(updated); setAccounts(updated);
+    if (!activeAccountId) { saveActiveId(id); setActiveAccountId(id); }
+    return id;
+  };
+
+  // ── Connect with GitHub (OAuth popup) ──────────────────
+  // Opens GitHub's authorize page in a popup. No manual token copy-paste —
+  // the popup posts the access token + profile back here once authorized.
+  // This token is a permanent OAuth App token (doesn't expire by default).
+  useEffect(() => {
+    const handleMessage = (e) => {
+      if (e.origin !== window.location.origin) return;
+      const data = e.data;
+      if (!data || (data.type !== "gh-connect-success" && data.type !== "gh-connect-error")) return;
+
+      setConnecting(false);
+      if (data.type === "gh-connect-error") {
+        setConnectError(data.message || "Connect failed, try again");
+        return;
+      }
+      upsertAccount({ login: data.login, name: data.name, avatar: data.avatar, pat: data.token });
+      onClose();
+    };
+    window.addEventListener("message", handleMessage);
+    return () => window.removeEventListener("message", handleMessage);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [accounts, activeAccountId]);
+
+  const handleConnect = () => {
+    setConnectError("");
+    setConnecting(true);
+    const w = 520, h = 640;
+    const left = window.screenX + (window.outerWidth - w) / 2;
+    const top = window.screenY + (window.outerHeight - h) / 2;
+    popupRef.current = window.open(
+      "/api/auth/connect/start",
+      "gh-connect",
+      `width=${w},height=${h},left=${left},top=${top}`
+    );
+    if (!popupRef.current) {
+      setConnecting(false);
+      setConnectError("Popup blocked — allow popups and try again");
+      return;
+    }
+    const poll = setInterval(() => {
+      if (popupRef.current?.closed) {
+        clearInterval(poll);
+        setConnecting(false);
+      }
+    }, 500);
+  };
 
   const handleTest = async () => {
     if (!pat.trim()) return;
@@ -774,10 +840,7 @@ function AddAccountModal({ onClose, accounts, setAccounts, setActiveAccountId, a
 
   const handleAdd = () => {
     if (!label.trim() || !pat.trim() || !testResult?.ok) return;
-    const newAcc = { id: Math.random().toString(36).slice(2), label: label.trim(), pat: pat.trim(), login: testResult.login, avatar: testResult.avatar };
-    const updated = [...accounts, newAcc];
-    saveAccounts(updated); setAccounts(updated);
-    if (!activeAccountId) { saveActiveId(newAcc.id); setActiveAccountId(newAcc.id); }
+    upsertAccount({ login: testResult.login, name: label.trim(), avatar: testResult.avatar, pat: pat.trim() });
     onClose();
   };
 
@@ -789,9 +852,27 @@ function AddAccountModal({ onClose, accounts, setAccounts, setActiveAccountId, a
           <button onClick={onClose} style={{ background: "none", border: "none", color: "#6e7681", fontSize: "18px", cursor: "pointer" }}>✕</button>
         </div>
 
+        {/* Connect with GitHub — automatic, permanent token, zero manual steps */}
+        <button
+          onClick={handleConnect}
+          disabled={connecting}
+          style={{ width: "100%", padding: "11px", borderRadius: "8px", fontSize: "13px", fontWeight: 700, cursor: connecting ? "not-allowed" : "pointer", fontFamily: "inherit", background: connecting ? "#0d1117" : "#21262d", color: connecting ? "#6e7681" : "#f0f6fc", border: "1px solid #30363d", display: "flex", alignItems: "center", justifyContent: "center", gap: "9px" }}
+        >
+          <span style={{ fontSize: "16px" }}>🐙</span>
+          {connecting ? "Waiting for authorization…" : "Connect with GitHub"}
+        </button>
+        {connectError && <div style={{ fontSize: "11px", color: "#f85149", textAlign: "center", marginTop: "-4px" }}>❌ {connectError}</div>}
+        <div style={{ fontSize: "10px", color: "#484f58", textAlign: "center", marginTop: "-6px" }}>One click · token auto-generate hota hai · permanent rehta hai</div>
+
+        <div style={{ display: "flex", alignItems: "center", gap: "10px", margin: "2px 0" }}>
+          <div style={{ flex: 1, height: "1px", background: "#21262d" }} />
+          <span style={{ fontSize: "10px", color: "#6e7681" }}>YA MANUALLY</span>
+          <div style={{ flex: 1, height: "1px", background: "#21262d" }} />
+        </div>
+
         <div>
           <div style={{ fontSize: "11px", color: "#8b949e", marginBottom: "4px" }}>🏷️ Label</div>
-          <input type="text" value={label} onChange={e => setLabel(e.target.value)} placeholder="e.g. Work, Personal" style={inp} autoFocus />
+          <input type="text" value={label} onChange={e => setLabel(e.target.value)} placeholder="e.g. Work, Personal" style={inp} />
         </div>
 
         <div>
