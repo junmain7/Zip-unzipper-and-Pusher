@@ -665,6 +665,8 @@ function RestorePointsModal({ onClose, owner, repo, token }) {
     setBackups(all.filter(b => b.owner === owner && b.repo === repo));
   }, [owner, repo]);
 
+  const [confirmDelete, setConfirmDelete] = useState(null); // backup obj or "all"
+
   const handleRevert = async (b) => {
     setReverting(b.id); setDoneMsg(""); setErrMsg("");
     try {
@@ -677,12 +679,33 @@ function RestorePointsModal({ onClose, owner, repo, token }) {
     }
   };
 
+  const handleDelete = (b) => {
+    const all = loadBackups().filter(x => x.id !== b.id);
+    saveBackups(all);
+    setBackups(all.filter(x => x.owner === owner && x.repo === repo));
+    setConfirmDelete(null);
+  };
+
+  const handleClearAll = () => {
+    const all = loadBackups().filter(x => !(x.owner === owner && x.repo === repo));
+    saveBackups(all);
+    setBackups([]);
+    setConfirmDelete(null);
+  };
+
   return (
     <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center", padding: "16px" }} onClick={onClose}>
       <div onClick={e => e.stopPropagation()} style={{ background: "#161b22", border: "1px solid #30363d", borderRadius: "12px", width: "100%", maxWidth: "380px", maxHeight: "78vh", display: "flex", flexDirection: "column", overflow: "hidden" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "14px 16px", borderBottom: "1px solid #21262d", flexShrink: 0 }}>
           <div style={{ fontSize: "14px", fontWeight: 700, color: "#f0f6fc" }}>🕐 Restore Points</div>
-          <button onClick={onClose} style={{ background: "none", border: "none", color: "#6e7681", fontSize: "18px", cursor: "pointer" }}>✕</button>
+          <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+            {backups.length > 0 && (
+              <button onClick={() => setConfirmDelete("all")} style={{ background: "none", border: "none", color: "#f85149", fontSize: "10.5px", fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>
+                Clear all
+              </button>
+            )}
+            <button onClick={onClose} style={{ background: "none", border: "none", color: "#6e7681", fontSize: "18px", cursor: "pointer" }}>✕</button>
+          </div>
         </div>
 
         {(doneMsg || errMsg) && (
@@ -710,6 +733,14 @@ function RestorePointsModal({ onClose, owner, repo, token }) {
               >
                 {reverting === b.id ? "⏳..." : "⏪ Revert"}
               </button>
+              <button
+                onClick={() => setConfirmDelete(b)}
+                disabled={reverting === b.id}
+                title="Delete backup"
+                style={{ background: "#21262d", border: "1px solid #30363d", color: "#f85149", borderRadius: "6px", padding: "6px 9px", fontSize: "11px", cursor: "pointer", fontFamily: "inherit", fontWeight: 600, flexShrink: 0 }}
+              >
+                🗑️
+              </button>
             </div>
           ))}
         </div>
@@ -717,6 +748,30 @@ function RestorePointsModal({ onClose, owner, repo, token }) {
           ⚠️ Revert branch ko force-update karta hai — uske baad ke commits/pushes overwrite ho jaayenge.
         </div>
       </div>
+
+      {confirmDelete && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", zIndex: 210, display: "flex", alignItems: "center", justifyContent: "center", padding: "16px" }} onClick={() => setConfirmDelete(null)}>
+          <div onClick={e => e.stopPropagation()} style={{ background: "#161b22", border: "1px solid #30363d", borderRadius: "12px", width: "100%", maxWidth: "320px", padding: "18px", display: "flex", flexDirection: "column", gap: "12px" }}>
+            <div style={{ fontSize: "14px", fontWeight: 700, color: "#f0f6fc" }}>🗑️ Delete {confirmDelete === "all" ? "all backups?" : "backup?"}</div>
+            <div style={{ fontSize: "12px", color: "#8b949e", lineHeight: 1.5 }}>
+              {confirmDelete === "all"
+                ? `${repo} ke saare restore points permanently delete ho jaayenge. Yeh undo nahi ho sakta.`
+                : `"${confirmDelete.label || "Push"}" (${confirmDelete.sha.slice(0, 7)}) delete ho jaayega. Yeh undo nahi ho sakta.`}
+            </div>
+            <div style={{ display: "flex", gap: "8px" }}>
+              <button onClick={() => setConfirmDelete(null)} style={{ flex: 1, background: "#21262d", border: "1px solid #30363d", color: "#c9d1d9", borderRadius: "8px", padding: "9px", fontSize: "12.5px", fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>
+                Cancel
+              </button>
+              <button
+                onClick={() => confirmDelete === "all" ? handleClearAll() : handleDelete(confirmDelete)}
+                style={{ flex: 1, background: "#f85149", border: "none", color: "#fff", borderRadius: "8px", padding: "9px", fontSize: "12.5px", fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}
+              >
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -767,7 +822,7 @@ function ZipTab({ token, selectedRepo, setSelectedRepo }) {
   const [logs, setLogs] = useState([]);
   const [status, setStatus] = useState("idle");
   const [summary, setSummary] = useState(null);
-  const [backupEnabled, setBackupEnabled] = useState(true);
+  const [backupEnabled, setBackupEnabled] = useState(false);
   const [showRestore, setShowRestore] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
   const [pendingFiles, setPendingFiles] = useState(null);
@@ -937,7 +992,7 @@ function FilesTab({ token, selectedRepo, setSelectedRepo }) {
   const [logs, setLogs] = useState([]);
   const [status, setStatus] = useState("idle");
   const [summary, setSummary] = useState(null);
-  const [backupEnabled, setBackupEnabled] = useState(true);
+  const [backupEnabled, setBackupEnabled] = useState(false);
   const [showRestore, setShowRestore] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
   const [repoFolders, setRepoFolders] = useState([]);
