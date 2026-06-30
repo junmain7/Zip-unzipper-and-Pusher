@@ -943,21 +943,24 @@ export default function ZipPusherPage() {
     <div style={{ minHeight: "100vh", background: "#0d1117", color: "#c9d1d9", fontFamily: "'JetBrains Mono','Fira Code',monospace", display: "flex", flexDirection: "column" }}>
 
       {/* Header */}
-      <div style={{ padding: "12px 16px", borderBottom: "1px solid #21262d", display: "flex", alignItems: "center", justifyContent: "space-between", flexShrink: 0, gap: "10px" }}>
+      <div style={{ padding: "13px 18px", borderBottom: "1px solid #21262d", display: "flex", alignItems: "center", justifyContent: "space-between", flexShrink: 0, gap: "10px", background: "linear-gradient(180deg, #11161d 0%, #0d1117 100%)", position: "sticky", top: 0, zIndex: 60 }}>
         {/* Logo + Title */}
-        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-          <span style={{ fontSize: "20px" }}>🐙</span>
-          <div style={{ fontSize: "13px", fontWeight: 700, color: "#f0f6fc" }}>Smart Pusher</div>
+        <div style={{ display: "flex", alignItems: "center", gap: "9px" }}>
+          <div style={{ width: "30px", height: "30px", borderRadius: "8px", background: "#161b22", border: "1px solid #21262d", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "16px" }}>🐙</div>
+          <div>
+            <div style={{ fontSize: "13.5px", fontWeight: 700, color: "#f0f6fc", letterSpacing: "0.2px" }}>Smart Pusher</div>
+            <div style={{ fontSize: "9.5px", color: "#6e7681", fontWeight: 500, marginTop: "-1px" }}>GitHub Deploy Tool</div>
+          </div>
         </div>
 
         {/* Right: Avatar Dropdown */}
         <div ref={menuRef} style={{ position: "relative" }}>
           <button
             onClick={() => setShowAccountMenu(p => !p)}
-            style={{ background: "none", border: "none", cursor: "pointer", padding: 0, display: "flex", alignItems: "center", gap: "8px" }}
+            style={{ background: showAccountMenu ? "#161b22" : "none", border: "1px solid", borderColor: showAccountMenu ? "#30363d" : "transparent", borderRadius: "10px", cursor: "pointer", padding: "4px 8px 4px 4px", display: "flex", alignItems: "center", gap: "8px", transition: "all 0.15s ease" }}
           >
             {/* Avatar */}
-            <div style={{ width: "32px", height: "32px", borderRadius: "50%", overflow: "hidden", border: `2px solid ${activeAccount ? "#2ea043" : "#30363d"}`, background: "#30363d", flexShrink: 0 }}>
+            <div style={{ width: "30px", height: "30px", borderRadius: "50%", overflow: "hidden", border: `2px solid ${activeAccount ? "#2ea043" : "#30363d"}`, background: "#30363d", flexShrink: 0 }}>
               {activeAccount?.avatar
                 ? <img src={activeAccount.avatar} alt="" style={{ width: "100%", height: "100%" }} />
                 : <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "14px" }}>👤</div>
@@ -965,28 +968,28 @@ export default function ZipPusherPage() {
             </div>
             {/* Name + chevron */}
             <div style={{ textAlign: "left" }}>
-              <div style={{ fontSize: "12px", fontWeight: 600, color: "#f0f6fc" }}>
+              <div style={{ fontSize: "12px", fontWeight: 600, color: "#f0f6fc", maxWidth: "110px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                 {activeAccount ? activeAccount.label : (session?.user?.name || "Account")}
               </div>
               {activeAccount && <div style={{ fontSize: "10px", color: "#6e7681" }}>@{activeAccount.login}</div>}
             </div>
-            <span style={{ color: "#6e7681", fontSize: "10px" }}>▾</span>
+            <span style={{ color: "#6e7681", fontSize: "9px", transform: showAccountMenu ? "rotate(180deg)" : "none", transition: "transform 0.15s ease" }}>▾</span>
           </button>
 
           {/* Google-style Account Card */}
           {showAccountMenu && (
-            <div style={{ position: "fixed", top: "56px", right: "12px", width: "280px", background: "#161b22", border: "1px solid #30363d", borderRadius: "14px", zIndex: 100, boxShadow: "0 12px 32px rgba(0,0,0,0.6)", overflow: "hidden" }}>
+            <div style={{ position: "absolute", top: "calc(100% + 10px)", right: 0, width: "270px", maxWidth: "calc(100vw - 24px)", background: "#161b22", border: "1px solid #30363d", borderRadius: "14px", zIndex: 100, boxShadow: "0 16px 40px rgba(0,0,0,0.55), 0 2px 8px rgba(0,0,0,0.4)", overflow: "hidden", animation: "spDropdownIn 0.16s ease-out" }}>
 
               {/* Current account detail */}
-              <div style={{ padding: "20px 16px", display: "flex", flexDirection: "column", alignItems: "center", gap: "8px", borderBottom: "1px solid #21262d" }}>
-                <div style={{ width: "56px", height: "56px", borderRadius: "50%", overflow: "hidden", border: "2px solid #2ea043", background: "#30363d" }}>
+              <div style={{ padding: "22px 16px 18px", display: "flex", flexDirection: "column", alignItems: "center", gap: "10px", borderBottom: "1px solid #21262d", background: "linear-gradient(180deg, #1a2029 0%, #161b22 100%)" }}>
+                <div style={{ width: "54px", height: "54px", borderRadius: "50%", overflow: "hidden", border: "2px solid #2ea043", background: "#30363d", boxShadow: "0 0 0 4px rgba(46,160,67,0.12)" }}>
                   {activeAccount?.avatar
                     ? <img src={activeAccount.avatar} alt="" style={{ width: "100%", height: "100%" }} />
-                    : <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "24px" }}>👤</div>
+                    : <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "22px" }}>👤</div>
                   }
                 </div>
                 <div style={{ textAlign: "center" }}>
-                  <div style={{ fontSize: "14px", fontWeight: 700, color: "#f0f6fc" }}>
+                  <div style={{ fontSize: "13.5px", fontWeight: 700, color: "#f0f6fc" }}>
                     {activeAccount ? activeAccount.label : (session?.user?.name || "No account")}
                   </div>
                   <div style={{ fontSize: "11px", color: "#6e7681", marginTop: "2px" }}>
@@ -999,11 +1002,11 @@ export default function ZipPusherPage() {
               <div style={{ padding: "6px" }}>
                 <button
                   onClick={() => { setShowSwitchModal(true); setShowAccountMenu(false); }}
-                  style={{ width: "100%", background: "none", border: "none", cursor: "pointer", padding: "11px 12px", display: "flex", alignItems: "center", gap: "12px", fontFamily: "inherit", borderRadius: "8px" }}
-                  onMouseDown={e => e.currentTarget.style.background = "#21262d"}
+                  className="sp-menu-item"
+                  style={{ width: "100%", background: "none", border: "none", cursor: "pointer", padding: "10px 11px", display: "flex", alignItems: "center", gap: "11px", fontFamily: "inherit", borderRadius: "8px", transition: "background 0.12s ease" }}
                 >
-                  <span style={{ fontSize: "16px", width: "20px", textAlign: "center" }}>⇄</span>
-                  <span style={{ fontSize: "13px", color: "#c9d1d9", fontWeight: 500 }}>Switch account</span>
+                  <span style={{ fontSize: "15px", width: "20px", textAlign: "center" }}>⇄</span>
+                  <span style={{ fontSize: "12.5px", color: "#c9d1d9", fontWeight: 500 }}>Switch account</span>
                   {accounts.length > 0 && (
                     <span style={{ marginLeft: "auto", fontSize: "10px", background: "#21262d", color: "#8b949e", borderRadius: "10px", padding: "1px 7px" }}>{accounts.length}</span>
                   )}
@@ -1011,10 +1014,11 @@ export default function ZipPusherPage() {
 
                 <button
                   onClick={() => { setShowAddModal(true); setShowAccountMenu(false); }}
-                  style={{ width: "100%", background: "none", border: "none", cursor: "pointer", padding: "11px 12px", display: "flex", alignItems: "center", gap: "12px", fontFamily: "inherit", borderRadius: "8px" }}
+                  className="sp-menu-item"
+                  style={{ width: "100%", background: "none", border: "none", cursor: "pointer", padding: "10px 11px", display: "flex", alignItems: "center", gap: "11px", fontFamily: "inherit", borderRadius: "8px", transition: "background 0.12s ease" }}
                 >
-                  <span style={{ fontSize: "16px", width: "20px", textAlign: "center" }}>➕</span>
-                  <span style={{ fontSize: "13px", color: "#c9d1d9", fontWeight: 500 }}>Add account</span>
+                  <span style={{ fontSize: "15px", width: "20px", textAlign: "center" }}>➕</span>
+                  <span style={{ fontSize: "12.5px", color: "#c9d1d9", fontWeight: 500 }}>Add account</span>
                 </button>
               </div>
 
@@ -1022,10 +1026,11 @@ export default function ZipPusherPage() {
               <div style={{ borderTop: "1px solid #21262d", padding: "6px" }}>
                 <button
                   onClick={() => { setShowAccountMenu(false); signOut({ callbackUrl: "/login" }); }}
-                  style={{ width: "100%", background: "none", border: "none", cursor: "pointer", padding: "11px 12px", display: "flex", alignItems: "center", gap: "12px", fontFamily: "inherit", borderRadius: "8px" }}
+                  className="sp-menu-item-danger"
+                  style={{ width: "100%", background: "none", border: "none", cursor: "pointer", padding: "10px 11px", display: "flex", alignItems: "center", gap: "11px", fontFamily: "inherit", borderRadius: "8px", transition: "background 0.12s ease" }}
                 >
-                  <span style={{ fontSize: "16px", width: "20px", textAlign: "center" }}>🚪</span>
-                  <span style={{ fontSize: "13px", color: "#f85149", fontWeight: 500 }}>Logout</span>
+                  <span style={{ fontSize: "15px", width: "20px", textAlign: "center" }}>🚪</span>
+                  <span style={{ fontSize: "12.5px", color: "#f85149", fontWeight: 500 }}>Logout</span>
                 </button>
               </div>
             </div>
@@ -1033,6 +1038,15 @@ export default function ZipPusherPage() {
         </div>
         {/* end avatar wrapper */}
       </div>
+
+      <style jsx global>{`
+        @keyframes spDropdownIn {
+          from { opacity: 0; transform: translateY(-6px) scale(0.98); }
+          to { opacity: 1; transform: translateY(0) scale(1); }
+        }
+        .sp-menu-item:hover { background: #21262d; }
+        .sp-menu-item-danger:hover { background: #2d1416; }
+      `}</style>
 
       {/* Content */}
       <div style={{ flex: 1, overflowY: "auto", padding: "16px", paddingBottom: "80px" }}>
