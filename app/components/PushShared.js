@@ -307,21 +307,85 @@ export function RestorePointsModal({ onClose, owner, repo, token }) {
 }
 
 // Confirm-before-push modal — prevents accidental push to wrong repo
-export function ConfirmPushModal({ owner, repo, branch, fileCount, commitMsg, onConfirm, onCancel }) {
+export function ConfirmPushModal({ owner, repo, branch, fileCount, commitMsg, diffLoading, diffError, toPush, skipped, onConfirm, onCancel }) {
+  const [filter, setFilter] = useState("");
+  const added = (toPush || []).filter(f => f.fileStatus === "added");
+  const updated = (toPush || []).filter(f => f.fileStatus === "updated");
+  const filteredList = (toPush || []).filter(f => f.name.toLowerCase().includes(filter.toLowerCase()));
+
   return (
     <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.65)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center", padding: "16px" }} onClick={onCancel}>
-      <div onClick={e => e.stopPropagation()} style={{ background: "#161b22", border: "1px solid #30363d", borderRadius: "12px", width: "100%", maxWidth: "380px", padding: "18px", display: "flex", flexDirection: "column", gap: "12px" }}>
+      <div onClick={e => e.stopPropagation()} style={{ background: "#161b22", border: "1px solid #30363d", borderRadius: "12px", width: "100%", maxWidth: "440px", maxHeight: "85vh", padding: "18px", display: "flex", flexDirection: "column", gap: "12px", overflow: "hidden" }}>
         <div style={{ fontSize: "15px", fontWeight: 700, color: "#f0f6fc" }}>🚀 Push Confirm Karo</div>
+
         <div style={{ background: "#0d1117", border: "1px solid #21262d", borderRadius: "8px", padding: "12px", display: "flex", flexDirection: "column", gap: "6px" }}>
           <div style={{ fontSize: "12px", color: "#8b949e" }}>Repo: <span style={{ color: "#58a6ff", fontWeight: 700 }}>{owner}/{repo}</span></div>
           <div style={{ fontSize: "12px", color: "#8b949e" }}>Branch: <span style={{ color: "#3fb950", fontWeight: 700 }}>{branch || "(default)"}</span></div>
-          <div style={{ fontSize: "12px", color: "#8b949e" }}>Files: <span style={{ color: "#e3b341", fontWeight: 700 }}>{fileCount}</span></div>
           <div style={{ fontSize: "12px", color: "#8b949e" }}>Commit: <span style={{ color: "#c9d1d9" }}>{commitMsg}</span></div>
         </div>
-        <div style={{ fontSize: "10.5px", color: "#6e7681" }}>⚠️ Pakka check kar lo ye sahi repo hai — push hone ke baad GitHub par directly changes ho jaayenge.</div>
+
+        {diffLoading && (
+          <div style={{ fontSize: "12px", color: "#8b949e", padding: "10px", textAlign: "center" }}>⏳ Diff check ho raha hai — kaunsi file kahan jayegi, calculate kiya ja raha hai...</div>
+        )}
+
+        {diffError && (
+          <div style={{ fontSize: "12px", color: "#f85149", background: "#3a1414", border: "1px solid #f8514955", borderRadius: "6px", padding: "10px" }}>❌ {diffError}</div>
+        )}
+
+        {!diffLoading && !diffError && toPush && (
+          <>
+            <div style={{ display: "flex", gap: "10px", fontSize: "11px" }}>
+              <span style={{ color: "#3fb950", fontWeight: 700 }}>🆕 {added.length} naye</span>
+              <span style={{ color: "#e3b341", fontWeight: 700 }}>✏️ {updated.length} updated</span>
+              <span style={{ color: "#6e7681" }}>⏭️ {skipped} unchanged</span>
+            </div>
+
+            {toPush.length > 6 && (
+              <input
+                type="text" placeholder="🔍 Path se filter karo..." value={filter} onChange={e => setFilter(e.target.value)}
+                style={{ width: "100%", boxSizing: "border-box", background: "#0d1117", border: "1px solid #30363d", color: "#c9d1d9", borderRadius: "6px", padding: "7px 10px", fontSize: "11px", outline: "none", fontFamily: "inherit" }}
+              />
+            )}
+
+            <div style={{ border: "1px solid #21262d", borderRadius: "8px", overflowY: "auto", flex: 1, minHeight: 0 }}>
+              {toPush.length === 0 ? (
+                <div style={{ padding: "14px", fontSize: "12px", color: "#6e7681", textAlign: "center" }}>Koi changed file nahi — sab already up-to-date hai.</div>
+              ) : filteredList.length === 0 ? (
+                <div style={{ padding: "14px", fontSize: "12px", color: "#6e7681", textAlign: "center" }}>Filter se koi file match nahi hui.</div>
+              ) : (
+                filteredList.map((f, i) => {
+                  const slash = f.name.lastIndexOf("/");
+                  const dir = slash === -1 ? "(repo root)" : f.name.slice(0, slash);
+                  const base = slash === -1 ? f.name : f.name.slice(slash + 1);
+                  return (
+                    <div key={f.name + i} style={{ padding: "7px 10px", borderBottom: "1px solid #21262d", display: "flex", alignItems: "flex-start", gap: "8px", fontSize: "11px" }}>
+                      <span style={{ flexShrink: 0 }}>{f.fileStatus === "added" ? "🆕" : "✏️"}</span>
+                      <div style={{ minWidth: 0, flex: 1 }}>
+                        <div style={{ color: "#c9d1d9", wordBreak: "break-all" }}>
+                          <span style={{ color: "#6e7681" }}>{dir}/</span><span style={{ fontWeight: 700 }}>{base}</span>
+                        </div>
+                        <div style={{ color: f.fileStatus === "added" ? "#3fb950" : "#e3b341", fontSize: "9.5px", marginTop: "1px" }}>
+                          {f.fileStatus === "added" ? "naya file — is location par add hoga" : "existing file — overwrite hoga"}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </>
+        )}
+
+        <div style={{ fontSize: "10.5px", color: "#6e7681" }}>⚠️ Upar list mein har file ka exact path check kar lo — push hone ke baad GitHub par directly changes ho jaayenge.</div>
         <div style={{ display: "flex", gap: "8px" }}>
           <button onClick={onCancel} style={{ flex: 1, padding: "10px", borderRadius: "6px", fontSize: "12px", fontFamily: "inherit", fontWeight: 600, cursor: "pointer", background: "#0d1117", color: "#8b949e", border: "1px solid #30363d" }}>Cancel</button>
-          <button onClick={onConfirm} style={{ flex: 1, padding: "10px", borderRadius: "6px", fontSize: "12px", fontFamily: "inherit", fontWeight: 700, cursor: "pointer", background: "#238636", color: "#fff", border: "1px solid #2ea043" }}>✅ Haan, Push Karo</button>
+          <button onClick={onConfirm} disabled={diffLoading || !!diffError} style={{
+            flex: 1, padding: "10px", borderRadius: "6px", fontSize: "12px", fontFamily: "inherit", fontWeight: 700,
+            cursor: diffLoading || diffError ? "not-allowed" : "pointer",
+            background: diffLoading || diffError ? "#161b22" : "#238636",
+            color: diffLoading || diffError ? "#6e7681" : "#fff",
+            border: "1px solid #2ea043",
+          }}>✅ Haan, Push Karo</button>
         </div>
       </div>
     </div>

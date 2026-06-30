@@ -2,7 +2,7 @@
 
 import { useState, useRef } from "react";
 import { readFileAsUint8, autoConvertPath } from "../../lib/zip";
-import { smartPush, fetchRepoFolders } from "../../lib/github";
+import { smartPush, computeDiff, pushDiff, fetchRepoFolders } from "../../lib/github";
 import { loadBackups, addHistoryEntry } from "../../lib/storage";
 import { RepoSelector, LogsPanel, SummaryCard, DiffBadge, BackupToggle, RestorePointsModal, ConfirmPushModal } from "./PushShared";
 
@@ -15,6 +15,9 @@ export default function FilesTab({ token, selectedRepo, setSelectedRepo }) {
   const [backupEnabled, setBackupEnabled] = useState(false);
   const [showRestore, setShowRestore] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
+  const [diff, setDiff] = useState(null);
+  const [diffLoading, setDiffLoading] = useState(false);
+  const [diffError, setDiffError] = useState("");
   const [repoFolders, setRepoFolders] = useState([]);
   const [foldersLoading, setFoldersLoading] = useState(false);
   const [foldersError, setFoldersError] = useState("");
@@ -39,30 +42,36 @@ export default function FilesTab({ token, selectedRepo, setSelectedRepo }) {
     e.target.value = "";
   };
 
-  const handlePushClick = () => {
+  const handlePushClick = async () => {
     const parsed = getOwnerRepo();
     if (!parsed) { log("⚠️ Repo select karo!", "error"); return; }
     if (!indivFiles.length) { log("⚠️ Koi file select nahi!", "error"); return; }
     const emptyPath = indivFiles.find(f => !f.repoPath.trim());
     if (emptyPath) { log(`⚠️ "${emptyPath.file.name}" ka path empty hai!`, "error"); return; }
+
     setShowConfirm(true);
-  };
-
-  const handlePush = async () => {
-    setShowConfirm(false);
-    const parsed = getOwnerRepo();
-    if (!parsed) return;
-
-    setStatus("running"); setLogs([]); setSummary(null);
+    setDiff(null); setDiffError(""); setDiffLoading(true);
     try {
-      log(`📂 ${indivFiles.length} files process ho rahi hain...`);
       const processed = [];
       for (const { file, repoPath } of indivFiles) {
         const data = await readFileAsUint8(file);
         processed.push({ name: repoPath.trim(), data });
       }
-      const result = await smartPush({ filesToProcess: processed, ...parsed, token, commitMsg, log, backupEnabled });
-      setSummary(result);
+      const d = await computeDiff({ filesToProcess: processed, owner: parsed.owner, repo: parsed.repo, token, log });
+      setDiff(d);
+    } catch (e) { setDiffError(e.message); }
+    finally { setDiffLoading(false); }
+  };
+
+  const handlePush = async () => {
+    setShowConfirm(false);
+    const parsed = getOwnerRepo();
+    if (!parsed || !diff) return;
+
+    setStatus("running"); setLogs([]); setSummary(null);
+    try {
+      const result = await pushDiff({ owner: parsed.owner, repo: parsed.repo, ...diff, commitMsg, token, log, backupEnabled });
+      setSummary({ ...result, skipped: diff.skipped });
       setStatus("done");
       addHistoryEntry({
         owner: parsed.owner, repo: parsed.repo, branch: result.branch, commitMsg, source: "files",
@@ -206,8 +215,10 @@ export default function FilesTab({ token, selectedRepo, setSelectedRepo }) {
 
       {showConfirm && parsedRepo && (
         <ConfirmPushModal
-          owner={parsedRepo.owner} repo={parsedRepo.repo} branch="" fileCount={indivFiles.length} commitMsg={commitMsg}
-          onConfirm={handlePush} onCancel={() => setShowConfirm(false)}
+          owner={parsedRepo.owner} repo={parsedRepo.repo} branch={diff?.branch || ""} fileCount={indivFiles.length} commitMsg={commitMsg}
+          diffLoading={diffLoading} diffError={diffError} toPush={diff?.toPush} skipped={diff?.skipped || 0}
+          onConfirm={handlePush}
+          onCancel={() => { setShowConfirm(false); setDiff(null); setDiffError(""); }}
         />
       )}
     </div>
