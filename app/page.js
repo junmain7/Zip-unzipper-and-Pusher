@@ -556,9 +556,26 @@ function RestorePointsModal({ onClose, owner, repo, token }) {
 }
 
 
+// Detects if all entries in a zip share one common top-level wrapper folder.
+// Returns true only if EVERY file path starts with the same "folderName/" prefix.
+function detectWrapperFolder(rawFiles) {
+  const fileEntries = rawFiles.filter(f => f.name && !f.name.endsWith("/"));
+  if (fileEntries.length === 0) return false;
+  let common = null;
+  for (const f of fileEntries) {
+    const idx = f.name.indexOf("/");
+    if (idx === -1) return false; // a file sits at the true root → no single wrapper
+    const top = f.name.slice(0, idx);
+    if (common === null) common = top;
+    else if (common !== top) return false; // different top-level folders → no single wrapper
+  }
+  return true;
+}
+
 function ZipTab({ token, selectedRepo, setSelectedRepo }) {
   const [zipFile, setZipFile] = useState(null);
-  const [stripRoot, setStripRoot] = useState(true);
+  const [stripOverride, setStripOverride] = useState(null); // null = auto, true/false = manual override
+  const [detectedWrapper, setDetectedWrapper] = useState(null); // null = not yet checked
   const [commitMsg, setCommitMsg] = useState("Smart diff update via ZIP pusher");
   const [logs, setLogs] = useState([]);
   const [status, setStatus] = useState("idle");
@@ -586,6 +603,10 @@ function ZipTab({ token, selectedRepo, setSelectedRepo }) {
       const buffer = await readFileAsArrayBuffer(zipFile);
       const rawFiles = parseZip(buffer);
       log(`✅ ${rawFiles.length} files mili`);
+
+      const wrapperDetected = detectWrapperFolder(rawFiles);
+      const stripRoot = stripOverride !== null ? stripOverride : wrapperDetected;
+      log(stripRoot ? `📁 Wrapper folder detected — strip kar raha hai` : `📁 Koi wrapper folder nahi — paths as-is rahenge`);
 
       log(`🔓 Decompress ho rahi hain...`);
       const decompressed = [];
@@ -626,17 +647,42 @@ function ZipTab({ token, selectedRepo, setSelectedRepo }) {
           <div style={{ fontSize: "12px", color: zipFile ? "#3fb950" : "#8b949e" }}>{zipFile ? zipFile.name : "ZIP file select karo ya drop karo"}</div>
           {zipFile && <div style={{ fontSize: "10px", color: "#6e7681", marginTop: "4px" }}>{(zipFile.size / 1024).toFixed(1)} KB</div>}
         </div>
-        <input ref={zipRef} type="file" accept=".zip" style={{ display: "none" }} onChange={e => setZipFile(e.target.files[0] || null)} />
+        <input ref={zipRef} type="file" accept=".zip" style={{ display: "none" }} onChange={async e => {
+          const f = e.target.files[0] || null;
+          setZipFile(f);
+          setStripOverride(null);
+          setDetectedWrapper(null);
+          if (f) {
+            try {
+              const buffer = await readFileAsArrayBuffer(f);
+              const rawFiles = parseZip(buffer);
+              setDetectedWrapper(detectWrapperFolder(rawFiles));
+            } catch { setDetectedWrapper(null); }
+          }
+        }} />
       </div>
 
-      <div onClick={() => setStripRoot(p => !p)} style={{ display: "flex", alignItems: "center", gap: "10px", cursor: "pointer", padding: "10px 12px", background: "#161b22", border: "1px solid #30363d", borderRadius: "6px" }}>
-        <div style={{ width: "36px", height: "20px", borderRadius: "10px", background: stripRoot ? "#238636" : "#30363d", position: "relative", flexShrink: 0 }}>
-          <div style={{ position: "absolute", top: "3px", left: stripRoot ? "18px" : "3px", width: "14px", height: "14px", borderRadius: "50%", background: "#fff", transition: "left 0.2s" }} />
-        </div>
-        <div>
-          <div style={{ fontSize: "12px", color: "#c9d1d9" }}>Root folder strip karo</div>
-          <div style={{ fontSize: "10px", color: "#6e7681" }}>project-main/ → / (pehla folder hata do)</div>
-        </div>
+      <div style={{ padding: "10px 12px", background: "#161b22", border: "1px solid #30363d", borderRadius: "6px" }}>
+        {detectedWrapper === null ? (
+          <div style={{ fontSize: "12px", color: "#6e7681" }}>📁 ZIP select karo — wrapper folder auto-detect ho jayega</div>
+        ) : (
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "10px" }}>
+            <div>
+              <div style={{ fontSize: "12px", color: "#c9d1d9" }}>
+                {detectedWrapper ? "✅ Wrapper folder mila — auto-strip hoga" : "✅ Koi wrapper folder nahi — paths as-is rahenge"}
+              </div>
+              <div style={{ fontSize: "10px", color: "#6e7681" }}>
+                {stripOverride === null ? "Auto-detected" : `Manual override: ${stripOverride ? "strip karo" : "strip mat karo"}`}
+              </div>
+            </div>
+            <button
+              onClick={() => setStripOverride(p => p === null ? !detectedWrapper : null)}
+              style={{ fontSize: "10px", color: "#58a6ff", background: "transparent", border: "1px solid #30363d", borderRadius: "5px", padding: "5px 8px", cursor: "pointer", fontFamily: "inherit" }}
+            >
+              {stripOverride === null ? "Override" : "Reset to auto"}
+            </button>
+          </div>
+        )}
       </div>
 
       <BackupToggle enabled={backupEnabled} setEnabled={setBackupEnabled} onOpenRestorePoints={() => setShowRestore(true)} restoreCount={repoBackupCount} />
