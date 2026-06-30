@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect } from "react";
 import { readFileAsArrayBuffer, parseZip, decompressFile, detectWrapperFolder, stripAllWrapperLevels } from "../../lib/zip";
-import { smartPush, fetchRepoFolders } from "../../lib/github";
+import { smartPush, computeDiff, pushDiff, fetchRepoFolders } from "../../lib/github";
 import { loadBackups, addHistoryEntry } from "../../lib/storage";
 import { RepoSelector, LogsPanel, SummaryCard, DiffBadge, BackupToggle, RestorePointsModal, ConfirmPushModal } from "./PushShared";
 
@@ -18,6 +18,9 @@ export default function ZipTab({ token, selectedRepo, setSelectedRepo }) {
   const [showRestore, setShowRestore] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
   const [pendingFiles, setPendingFiles] = useState(null);
+  const [diff, setDiff] = useState(null); // { branch, latestSha, baseTreeSha, toPush, skipped }
+  const [diffLoading, setDiffLoading] = useState(false);
+  const [diffError, setDiffError] = useState("");
   const [progress, setProgress] = useState(null); // { current, total }
   const [repoRootFolders, setRepoRootFolders] = useState(null); // GitHub se fetched actual root folder names — wrapper detection ko accurate banane ke liye
   const zipRef = useRef();
@@ -97,20 +100,29 @@ export default function ZipTab({ token, selectedRepo, setSelectedRepo }) {
       setPendingFiles(decompressed);
       setStatus("idle");
       setShowConfirm(true);
+
+      // Confirm modal khulte hi diff calculate karo, taaki har file ka exact
+      // path + status (added/updated) confirm se pehle dikh sake.
+      setDiff(null); setDiffError(""); setDiffLoading(true);
+      try {
+        const d = await computeDiff({ filesToProcess: decompressed, owner: parsed.owner, repo: parsed.repo, token, log });
+        setDiff(d);
+      } catch (e) { setDiffError(e.message); }
+      finally { setDiffLoading(false); }
     } catch (e) { log(`❌ ${e.message}`, "error"); setStatus("error"); }
   };
 
-  // Step 2: actually push, after confirm
+  // Step 2: actually push, after confirm — same precomputed diff use hota hai
+  // jo modal mein dikhaya gaya tha (with a fresh conflict check inside pushDiff).
   const handlePush = async () => {
     setShowConfirm(false);
     const parsed = getOwnerRepo();
-    const decompressed = pendingFiles;
-    if (!parsed || !decompressed) return;
+    if (!parsed || !diff) return;
 
     setStatus("running"); setProgress(null);
     try {
-      const result = await smartPush({ filesToProcess: decompressed, ...parsed, token, commitMsg, log, backupEnabled });
-      setSummary(result);
+      const result = await pushDiff({ owner: parsed.owner, repo: parsed.repo, ...diff, commitMsg, token, log, backupEnabled });
+      setSummary({ ...result, skipped: diff.skipped });
       setStatus("done");
       addHistoryEntry({
         owner: parsed.owner, repo: parsed.repo, branch: result.branch, commitMsg, source: "zip",
@@ -206,8 +218,10 @@ export default function ZipTab({ token, selectedRepo, setSelectedRepo }) {
 
       {showConfirm && parsed && pendingFiles && (
         <ConfirmPushModal
-          owner={parsed.owner} repo={parsed.repo} branch="" fileCount={pendingFiles.length} commitMsg={commitMsg}
-          onConfirm={handlePush} onCancel={() => { setShowConfirm(false); setStatus("idle"); }}
+          owner={parsed.owner} repo={parsed.repo} branch={diff?.branch || ""} fileCount={pendingFiles.length} commitMsg={commitMsg}
+          diffLoading={diffLoading} diffError={diffError} toPush={diff?.toPush} skipped={diff?.skipped || 0}
+          onConfirm={handlePush}
+          onCancel={() => { setShowConfirm(false); setStatus("idle"); setDiff(null); setDiffError(""); }}
         />
       )}
     </div>
