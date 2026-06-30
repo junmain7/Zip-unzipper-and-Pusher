@@ -1570,9 +1570,13 @@ const VERCEL_TARGETS = [["production", "Production"], ["preview", "Preview"], ["
 function VercelEnvPanel({ open }) {
   const [account, setAccount] = useState(null); // {token, teamId, login, name, avatar}
   const [loadingAccount, setLoadingAccount] = useState(true);
-  const [connecting, setConnecting] = useState(false);
+
+  const [patInput, setPatInput] = useState("");
+  const [teamIdInput, setTeamIdInput] = useState("");
+  const [patVisible, setPatVisible] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState(null);
   const [connectError, setConnectError] = useState("");
-  const popupRef = useRef(null);
 
   const [projects, setProjects] = useState([]);
   const [projectsLoading, setProjectsLoading] = useState(false);
@@ -1627,34 +1631,26 @@ function VercelEnvPanel({ open }) {
 
   useEffect(() => { if (selectedProjectId) loadEnvs(selectedProjectId); else setEnvs([]); }, [selectedProjectId]);
 
-  // OAuth connect popup — same pattern as GitHub connect
-  useEffect(() => {
-    const handleMessage = (e) => {
-      if (e.origin !== window.location.origin) return;
-      const data = e.data;
-      if (!data || (data.type !== "vercel-connect-success" && data.type !== "vercel-connect-error")) return;
+  // PAT test — verifies the token works and fetches the user's profile
+  const handleTestPat = async () => {
+    if (!patInput.trim()) return;
+    setTesting(true); setTestResult(null); setConnectError("");
+    try {
+      const res = await fetch(`${VERCEL_API}/v2/user`, { headers: { Authorization: `Bearer ${patInput.trim()}` } });
+      if (!res.ok) throw new Error("Invalid token");
+      const data = await res.json();
+      const user = data.user || data;
+      setTestResult({ ok: true, login: user.username || user.name || "vercel-user", name: user.name, avatar: user.avatar ? `https://vercel.com/api/www/avatar/${user.avatar}` : "" });
+    } catch (e) { setTestResult({ ok: false }); }
+    finally { setTesting(false); }
+  };
 
-      setConnecting(false);
-      if (data.type === "vercel-connect-error") {
-        setConnectError(data.message || "Connect failed, try again");
-        return;
-      }
-      const acc = { token: data.token, teamId: data.teamId || null, login: data.login, name: data.name, avatar: data.avatar };
-      setAccount(acc);
-      saveVercelAccountToCloud(acc);
-    };
-    window.addEventListener("message", handleMessage);
-    return () => window.removeEventListener("message", handleMessage);
-  }, []);
-
-  const handleConnect = () => {
-    setConnectError(""); setConnecting(true);
-    const w = 520, h = 680;
-    const left = window.screenX + (window.outerWidth - w) / 2;
-    const top = window.screenY + (window.outerHeight - h) / 2;
-    popupRef.current = window.open("/api/auth/vercel/start", "vercel-connect", `width=${w},height=${h},left=${left},top=${top}`);
-    if (!popupRef.current) { setConnecting(false); setConnectError("Popup blocked — allow popups and try again"); return; }
-    const poll = setInterval(() => { if (popupRef.current?.closed) { clearInterval(poll); setConnecting(false); } }, 500);
+  const handleConnectPat = async () => {
+    if (!testResult?.ok) return;
+    const acc = { token: patInput.trim(), teamId: teamIdInput.trim() || null, login: testResult.login, name: testResult.name, avatar: testResult.avatar };
+    setAccount(acc);
+    await saveVercelAccountToCloud(acc);
+    setPatInput(""); setTeamIdInput(""); setTestResult(null); setPatVisible(false);
   };
 
   const handleDisconnect = async () => {
@@ -1699,15 +1695,45 @@ function VercelEnvPanel({ open }) {
 
   if (!account) {
     return (
-      <div style={{ padding: "16px", display: "flex", flexDirection: "column", gap: "12px" }}>
+      <div style={{ padding: "16px", display: "flex", flexDirection: "column", gap: "10px" }}>
         <div style={{ fontSize: "11.5px", color: "#8b949e", lineHeight: 1.6 }}>
-          Vercel account connect karo taaki apne projects ke env variables yahin se add/update kar sako.
+          Vercel Personal Access Token se connect karo taaki apne projects ke env variables yahin se add/update kar sako.
         </div>
-        <button onClick={handleConnect} disabled={connecting} style={{ width: "100%", padding: "11px", borderRadius: "8px", fontSize: "13px", fontWeight: 700, cursor: connecting ? "not-allowed" : "pointer", fontFamily: "inherit", background: connecting ? "#0d1117" : "#21262d", color: connecting ? "#6e7681" : "#f0f6fc", border: "1px solid #30363d", display: "flex", alignItems: "center", justifyContent: "center", gap: "9px" }}>
-          <span style={{ fontSize: "16px" }}>▲</span>
-          {connecting ? "Waiting for authorization…" : "Connect with Vercel"}
-        </button>
+        <div>
+          <div style={{ fontSize: "11px", color: "#8b949e", marginBottom: "4px" }}>
+            🔑 Vercel Token &nbsp;
+            <a href="https://vercel.com/account/tokens" target="_blank" rel="noopener noreferrer" style={{ color: "#58a6ff", textDecoration: "none" }}>Generate karo ↗</a>
+          </div>
+          <div style={{ position: "relative" }}>
+            <input type={patVisible ? "text" : "password"} value={patInput} onChange={e => { setPatInput(e.target.value); setTestResult(null); }} placeholder="vercel_xxxxxxxxxxxx" style={{ ...inp, paddingRight: "55px" }} />
+            <button onClick={() => setPatVisible(p => !p)} style={{ position: "absolute", right: "8px", top: "50%", transform: "translateY(-50%)", background: "none", border: "none", color: "#6e7681", cursor: "pointer", fontSize: "11px", fontFamily: "inherit" }}>
+              {patVisible ? "Hide" : "Show"}
+            </button>
+          </div>
+        </div>
+        <div>
+          <div style={{ fontSize: "11px", color: "#8b949e", marginBottom: "4px" }}>👥 Team ID (optional — sirf team account ho to)</div>
+          <input type="text" value={teamIdInput} onChange={e => setTeamIdInput(e.target.value)} placeholder="team_xxxxxxxx" style={inp} />
+        </div>
+
+        {testResult && (
+          <div style={{ background: testResult.ok ? "#0d1f0d" : "#1f0d0d", border: `1px solid ${testResult.ok ? "#2ea043" : "#da3633"}`, borderRadius: "6px", padding: "8px 10px", fontSize: "11px", display: "flex", alignItems: "center", gap: "8px" }}>
+            {testResult.ok ? (
+              <><img src={testResult.avatar} alt="" style={{ width: "18px", height: "18px", borderRadius: "50%" }} /><span style={{ color: "#3fb950" }}>✅ @{testResult.login}</span></>
+            ) : <span style={{ color: "#f85149" }}>❌ Invalid token</span>}
+          </div>
+        )}
+
+        <div style={{ display: "flex", gap: "8px" }}>
+          <button onClick={handleTestPat} disabled={testing || !patInput.trim()} style={{ flex: 1, padding: "9px", borderRadius: "6px", fontSize: "12px", fontFamily: "inherit", fontWeight: 600, cursor: testing || !patInput.trim() ? "not-allowed" : "pointer", background: testing || !patInput.trim() ? "#161b22" : "#1f6feb", color: testing || !patInput.trim() ? "#6e7681" : "#fff", border: "1px solid #388bfd" }}>
+            {testing ? "⏳…" : "🔍 Test Karo"}
+          </button>
+          <button onClick={handleConnectPat} disabled={!testResult?.ok} style={{ flex: 1, padding: "9px", borderRadius: "6px", fontSize: "12px", fontFamily: "inherit", fontWeight: 600, cursor: !testResult?.ok ? "not-allowed" : "pointer", background: !testResult?.ok ? "#161b22" : "#238636", color: !testResult?.ok ? "#6e7681" : "#fff", border: "1px solid #2ea043" }}>
+            ✅ Connect Karo
+          </button>
+        </div>
         {connectError && <div style={{ fontSize: "11px", color: "#f85149" }}>❌ {connectError}</div>}
+        <div style={{ fontSize: "10px", color: "#484f58", textAlign: "center" }}>Token Firestore mein save hota hai · Scope: full account ya specific team</div>
       </div>
     );
   }
