@@ -25,6 +25,10 @@ export default function LoginPage() {
   return (
     <div style={{
       minHeight: "100vh",
+      width: "100%",
+      maxWidth: "100vw",
+      boxSizing: "border-box",
+      overflowX: "hidden",
       background: "#0d1117",
       color: "#c9d1d9",
       fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
@@ -33,13 +37,13 @@ export default function LoginPage() {
       justifyContent: "center",
       padding: "16px",
     }}>
-      <div style={{ textAlign: "center" }}>
+      <div style={{ textAlign: "center", width: "100%", maxWidth: "320px", boxSizing: "border-box" }}>
         <div style={{ fontSize: "40px", marginBottom: "12px" }}>📦</div>
         <div style={{ fontSize: "16px", fontWeight: 700, color: "#f0f6fc", marginBottom: "6px" }}>
           ZIP → GitHub Pusher
         </div>
         <div style={{ fontSize: "12px", color: "#8b949e", marginBottom: "24px" }}>
-          Login karo apne Google account se
+          Login with your Google account 
         </div>
         <button
           onClick={() => signIn("google", { callbackUrl: "/" })}
@@ -53,6 +57,8 @@ export default function LoginPage() {
             fontWeight: 700,
             cursor: "pointer",
             fontFamily: "inherit",
+            width: "100%",
+            boxSizing: "border-box",
           }}
         >
           🔐 Login with Google
