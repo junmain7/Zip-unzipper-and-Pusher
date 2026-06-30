@@ -221,10 +221,14 @@ async function updateRef(owner, repo, branch, commitSha, token, force = false) {
 }
 
 async function downloadRepoZip(owner, repo, branch, token) {
-  const res = await fetch(`${GITHUB_API}/repos/${owner}/${repo}/zipball/${branch}`, {
-    headers: { Authorization: `token ${token}`, Accept: "application/vnd.github.v3+json" },
+  const res = await fetch(`/api/zip-download?owner=${encodeURIComponent(owner)}&repo=${encodeURIComponent(repo)}&branch=${encodeURIComponent(branch)}`, {
+    headers: { Authorization: `token ${token}` },
   });
-  if (!res.ok) throw new Error(`ZIP download error: ${res.status}`);
+  if (!res.ok) {
+    let msg = `ZIP download error: ${res.status}`;
+    try { const e = await res.json(); if (e.error) msg = e.error; } catch {}
+    throw new Error(msg);
+  }
   const blob = await res.blob();
   triggerBlobDownload(blob, `${repo}-${branch}.zip`);
 }
