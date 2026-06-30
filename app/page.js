@@ -2037,9 +2037,33 @@ export default function ZipPusherPage() {
   const [showAccountMenu, setShowAccountMenu] = useState(false);
   const [showAddModal, setShowAddModal] = useState(false);
   const [showSwitchModal, setShowSwitchModal] = useState(false);
+  const [installPrompt, setInstallPrompt] = useState(null);
+  const [isInstalled, setIsInstalled] = useState(false);
   const menuRef = useRef();
 
   useEffect(() => { if (sessionStatus === "unauthenticated") router.push("/login"); }, [sessionStatus, router]);
+
+  // PWA install prompt capture
+  useEffect(() => {
+    const onBeforeInstall = (e) => { e.preventDefault(); setInstallPrompt(e); };
+    const onInstalled = () => { setIsInstalled(true); setInstallPrompt(null); };
+    if (window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone) {
+      setIsInstalled(true);
+    }
+    window.addEventListener("beforeinstallprompt", onBeforeInstall);
+    window.addEventListener("appinstalled", onInstalled);
+    return () => {
+      window.removeEventListener("beforeinstallprompt", onBeforeInstall);
+      window.removeEventListener("appinstalled", onInstalled);
+    };
+  }, []);
+
+  async function handleInstallClick() {
+    if (!installPrompt) return;
+    installPrompt.prompt();
+    await installPrompt.userChoice;
+    setInstallPrompt(null);
+  }
 
   useEffect(() => {
     if (sessionStatus !== "authenticated") return;
@@ -2188,6 +2212,20 @@ export default function ZipPusherPage() {
                   <span style={{ fontSize: "12.5px", color: "#c9d1d9", fontWeight: 500 }}>Add account</span>
                 </button>
               </div>
+
+              {/* Install App */}
+              {!isInstalled && installPrompt && (
+                <div style={{ borderTop: "1px solid #21262d", padding: "6px" }}>
+                  <button
+                    onClick={() => { setShowAccountMenu(false); handleInstallClick(); }}
+                    className="sp-menu-item"
+                    style={{ width: "100%", background: "none", border: "none", cursor: "pointer", padding: "10px 11px", display: "flex", alignItems: "center", gap: "11px", fontFamily: "inherit", borderRadius: "8px", transition: "background 0.12s ease" }}
+                  >
+                    <span style={{ fontSize: "15px", width: "20px", textAlign: "center" }}>📲</span>
+                    <span style={{ fontSize: "12.5px", color: "#c9d1d9", fontWeight: 500 }}>Install App</span>
+                  </button>
+                </div>
+              )}
 
               {/* Logout */}
               <div style={{ borderTop: "1px solid #21262d", padding: "6px" }}>
