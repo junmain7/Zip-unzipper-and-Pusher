@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
-import { readFileAsArrayBuffer, parseZip, decompressFile, detectWrapperFolder } from "../../lib/zip";
+import { readFileAsArrayBuffer, parseZip, decompressFile, detectWrapperFolder, stripAllWrapperLevels } from "../../lib/zip";
 import { smartPush, fetchRepoFolders } from "../../lib/github";
 import { loadBackups, addHistoryEntry } from "../../lib/storage";
 import { RepoSelector, LogsPanel, SummaryCard, DiffBadge, BackupToggle, RestorePointsModal, ConfirmPushModal } from "./PushShared";
@@ -61,19 +61,38 @@ export default function ZipTab({ token, selectedRepo, setSelectedRepo }) {
       log(`✅ ${rawFiles.length} files mili`);
 
       const wrapperDetected = detectWrapperFolder(rawFiles, repoRootFolders);
-      const stripRoot = stripOverride !== null ? stripOverride : wrapperDetected;
-      log(stripRoot ? `📁 Wrapper folder detected — strip kar raha hai` : `📁 Koi wrapper folder nahi — paths as-is rahenge`);
+      log(wrapperDetected ? `📁 Wrapper folder detected — strip kar raha hai` : `📁 Koi wrapper folder nahi — paths as-is rahenge`);
 
       log(`🔓 Decompress ho rahi hain...`);
-      const decompressed = [];
+      const rawDecompressed = [];
       for (const f of rawFiles) {
         try {
           const data = await decompressFile(f);
-          let name = f.name;
-          if (stripRoot) { const s = name.indexOf("/"); if (s !== -1) name = name.slice(s + 1); }
-          if (name) decompressed.push({ name, data });
+          if (f.name) rawDecompressed.push({ name: f.name, data });
         } catch (e) { log(`⚠️ Skip: ${f.name} — ${e.message}`, "warn"); }
       }
+
+      // Strip karne se pehle decompress kiya — taaki nested wrapper levels
+      // (jaise "Wrapper/RepoName/app/page.js") sahi se detect ho sakein,
+      // ek se zyada level strip karne ki zaroorat ho to woh bhi ho jaaye.
+      let decompressed;
+      if (stripOverride === false) {
+        decompressed = rawDecompressed; // manual override: strip mat karo
+      } else if (stripOverride === true) {
+        // manual override: kam se kam ek level zaroor strip karo, phir
+        // baaki nested levels auto-detect se strip ho jaayenge
+        const onceStripped = rawDecompressed
+          .map(f => { const s = f.name.indexOf("/"); return s !== -1 ? { ...f, name: f.name.slice(s + 1) } : f; })
+          .filter(f => f.name);
+        const { files, levelsStripped } = stripAllWrapperLevels(onceStripped, repoRootFolders);
+        decompressed = files;
+        if (levelsStripped > 0) log(`📁 ${levelsStripped} aur nested wrapper level(s) bhi strip kiye`);
+      } else {
+        const { files, levelsStripped } = stripAllWrapperLevels(rawDecompressed, repoRootFolders);
+        decompressed = files;
+        if (levelsStripped > 1) log(`📁 ${levelsStripped} nested wrapper levels strip kiye`);
+      }
+
       log(`✅ ${decompressed.length} files ready — confirm karo`);
       setPendingFiles(decompressed);
       setStatus("idle");
