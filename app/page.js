@@ -48,16 +48,6 @@ function addHistoryEntry(record) {
   return trimmed;
 }
 
-// ── Vercel Integration Config (per owner/repo) ─────────────────────────
-const VERCEL_KEY = "ghpusher_vercel_cfg";
-function loadVercelConfigs() { try { return JSON.parse(localStorage.getItem(VERCEL_KEY) || "{}"); } catch { return {}; } }
-function saveVercelConfigs(c) { localStorage.setItem(VERCEL_KEY, JSON.stringify(c)); }
-function getVercelConfig(owner, repo) { return loadVercelConfigs()[`${owner}/${repo}`] || null; }
-function setVercelConfig(owner, repo, cfg) {
-  const all = loadVercelConfigs();
-  all[`${owner}/${repo}`] = cfg;
-  saveVercelConfigs(all);
-}
 
 function uint8ToBase64(bytes) {
   let binary = "";
@@ -327,51 +317,6 @@ async function smartPush({ filesToProcess, owner, repo, token, commitMsg, log, b
   return { added, updated, skipped, branch, prevSha: latestSha, newSha: newCommitSha };
 }
 
-// ── Vercel Auto-Rollback Monitor ──────────────────────────
-// Polls Vercel for the deployment matching newSha. If it errors out,
-// automatically force-updates the GitHub ref back to prevSha.
-async function monitorVercelDeployment({ owner, repo, branch, prevSha, newSha, githubToken, vercelToken, vercelProjectId, log }) {
-  if (!vercelToken || !vercelProjectId || !newSha) return;
-  log(`🔭 Vercel deployment monitor kar raha hai (auto-rollback ON)...`);
-  const maxAttempts = 24; // ~6 minutes at 15s interval
-  for (let i = 0; i < maxAttempts; i++) {
-    await new Promise(r => setTimeout(r, 15000));
-    let dep = null;
-    try {
-      const res = await fetch(`https://api.vercel.com/v6/deployments?projectId=${encodeURIComponent(vercelProjectId)}&limit=10`, {
-        headers: { Authorization: `Bearer ${vercelToken}` },
-      });
-      if (!res.ok) { log(`⚠️ Vercel status check fail (${res.status})`, "warn"); continue; }
-      const data = await res.json();
-      dep = (data.deployments || []).find(d => {
-        const sha = d.meta?.githubCommitSha || d.meta?.gitCommitSha || "";
-        return sha === newSha || (sha && newSha.startsWith(sha.slice(0, 7)));
-      });
-    } catch (e) { log(`⚠️ Vercel poll error: ${e.message}`, "warn"); continue; }
-
-    if (!dep) continue; // deployment not visible yet, keep polling
-
-    if (dep.readyState === "READY") {
-      log(`✅ Vercel deployment successful — koi rollback nahi chahiye`, "success");
-      return { ok: true };
-    }
-    if (dep.readyState === "ERROR" || dep.readyState === "CANCELED") {
-      log(`❌ Vercel build FAILED — auto-rollback kar raha hai ${prevSha.slice(0, 7)} par...`, "error");
-      try {
-        await updateRef(owner, repo, branch, prevSha, githubToken, true);
-        log(`⏪ Auto-rollback ho gaya — ${owner}/${repo}@${branch} wapas ${prevSha.slice(0, 7)} par`, "success");
-        return { ok: false, rolledBack: true };
-      } catch (e) {
-        log(`❌ Auto-rollback bhi fail ho gaya: ${e.message}`, "error");
-        return { ok: false, rolledBack: false };
-      }
-    }
-    // QUEUED / BUILDING / INITIALIZING → keep polling
-  }
-  log(`⌛ Vercel monitor timeout — deployment status manually check kar lo`, "warn");
-  return { ok: null };
-}
-
 // ── Sub-components ────────────────────────────────────────
 
 // Repo Selector (shared across tabs)
@@ -622,74 +567,6 @@ function RestorePointsModal({ onClose, owner, repo, token }) {
   );
 }
 
-// Vercel Auto-Rollback Panel (shared across tabs) — per-repo settings
-function VercelRollbackPanel({ owner, repo }) {
-  const [cfg, setCfg] = useState(null);
-  const [showModal, setShowModal] = useState(false);
-  const [vToken, setVToken] = useState("");
-  const [vProjectId, setVProjectId] = useState("");
-
-  useEffect(() => {
-    if (!owner || !repo) { setCfg(null); return; }
-    const c = getVercelConfig(owner, repo);
-    setCfg(c);
-    setVToken(c?.token || "");
-    setVProjectId(c?.projectId || "");
-  }, [owner, repo]);
-
-  if (!owner || !repo) return null;
-
-  const enabled = !!cfg?.autoRollback;
-
-  const toggleEnabled = () => {
-    if (!cfg?.token || !cfg?.projectId) { setShowModal(true); return; }
-    const next = { ...cfg, autoRollback: !enabled };
-    setVercelConfig(owner, repo, next);
-    setCfg(next);
-  };
-
-  const handleSave = () => {
-    const next = { token: vToken.trim(), projectId: vProjectId.trim(), autoRollback: !!(vToken.trim() && vProjectId.trim()) };
-    setVercelConfig(owner, repo, next);
-    setCfg(next);
-    setShowModal(false);
-  };
-
-  return (
-    <>
-      <div style={{ display: "flex", alignItems: "center", gap: "10px", padding: "10px 12px", background: "#161b22", border: "1px solid #30363d", borderRadius: "6px" }}>
-        <div onClick={toggleEnabled} style={{ display: "flex", alignItems: "center", gap: "10px", cursor: "pointer", flex: 1 }}>
-          <div style={{ width: "36px", height: "20px", borderRadius: "10px", background: enabled ? "#1f6feb" : "#30363d", position: "relative", flexShrink: 0 }}>
-            <div style={{ position: "absolute", top: "3px", left: enabled ? "18px" : "3px", width: "14px", height: "14px", borderRadius: "50%", background: "#fff", transition: "left 0.2s" }} />
-          </div>
-          <div>
-            <div style={{ fontSize: "12px", color: "#c9d1d9" }}>▲ Vercel Auto-Rollback</div>
-            <div style={{ fontSize: "10px", color: "#6e7681" }}>{cfg?.projectId ? `Build fail → auto revert` : "Pehle Vercel token/project ID set karo"}</div>
-          </div>
-        </div>
-        <button onClick={() => setShowModal(true)} style={{ background: "#0d1117", border: "1px solid #30363d", borderRadius: "6px", padding: "7px 10px", fontSize: "11px", color: "#58a6ff", cursor: "pointer", fontFamily: "inherit", flexShrink: 0 }}>
-          ⚙️
-        </button>
-      </div>
-
-      {showModal && (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center", padding: "16px" }} onClick={() => setShowModal(false)}>
-          <div onClick={e => e.stopPropagation()} style={{ background: "#161b22", border: "1px solid #30363d", borderRadius: "12px", width: "100%", maxWidth: "380px", padding: "16px", display: "flex", flexDirection: "column", gap: "10px" }}>
-            <div style={{ fontSize: "14px", fontWeight: 700, color: "#f0f6fc" }}>▲ Vercel Settings — {owner}/{repo}</div>
-            <div style={{ fontSize: "10px", color: "#6e7681" }}>Token: Vercel → Settings → Tokens se banao. Project ID: Project → Settings mein milega.</div>
-            <input type="text" value={vToken} onChange={e => setVToken(e.target.value)} placeholder="Vercel API Token" style={{ width: "100%", boxSizing: "border-box", background: "#0d1117", border: "1px solid #30363d", color: "#c9d1d9", borderRadius: "6px", padding: "9px 12px", fontSize: "12px", outline: "none", fontFamily: "inherit" }} />
-            <input type="text" value={vProjectId} onChange={e => setVProjectId(e.target.value)} placeholder="Vercel Project ID" style={{ width: "100%", boxSizing: "border-box", background: "#0d1117", border: "1px solid #30363d", color: "#c9d1d9", borderRadius: "6px", padding: "9px 12px", fontSize: "12px", outline: "none", fontFamily: "inherit" }} />
-            <div style={{ display: "flex", gap: "8px", marginTop: "4px" }}>
-              <button onClick={() => setShowModal(false)} style={{ flex: 1, padding: "9px", borderRadius: "6px", fontSize: "12px", fontFamily: "inherit", fontWeight: 600, cursor: "pointer", background: "#0d1117", color: "#8b949e", border: "1px solid #30363d" }}>Cancel</button>
-              <button onClick={handleSave} style={{ flex: 1, padding: "9px", borderRadius: "6px", fontSize: "12px", fontFamily: "inherit", fontWeight: 600, cursor: "pointer", background: "#1f6feb", color: "#fff", border: "1px solid #388bfd" }}>Save</button>
-            </div>
-          </div>
-        </div>
-      )}
-    </>
-  );
-}
-
 // Confirm-before-push modal — prevents accidental push to wrong repo
 function ConfirmPushModal({ owner, repo, branch, fileCount, commitMsg, onConfirm, onCancel }) {
   return (
@@ -794,7 +671,6 @@ function ZipTab({ token, selectedRepo, setSelectedRepo }) {
 
     setStatus("running"); setProgress(null);
     try {
-      const vercelCfg = getVercelConfig(parsed.owner, parsed.repo);
       const result = await smartPush({ filesToProcess: decompressed, ...parsed, token, commitMsg, log, backupEnabled });
       setSummary(result);
       setStatus("done");
@@ -804,13 +680,6 @@ function ZipTab({ token, selectedRepo, setSelectedRepo }) {
         added: result.added, updated: result.updated, skipped: result.skipped,
         status: result.newSha ? "success" : "no-changes",
       });
-      if (result.newSha && vercelCfg?.autoRollback) {
-        monitorVercelDeployment({
-          owner: parsed.owner, repo: parsed.repo, branch: result.branch,
-          prevSha: result.prevSha, newSha: result.newSha,
-          githubToken: token, vercelToken: vercelCfg.token, vercelProjectId: vercelCfg.projectId, log,
-        });
-      }
     } catch (e) {
       log(`❌ ${e.message}`, "error"); setStatus("error");
       addHistoryEntry({ owner: parsed.owner, repo: parsed.repo, branch: "", commitMsg, source: "zip", status: "failed", error: e.message });
@@ -878,7 +747,6 @@ function ZipTab({ token, selectedRepo, setSelectedRepo }) {
 
       <BackupToggle enabled={backupEnabled} setEnabled={setBackupEnabled} onOpenRestorePoints={() => setShowRestore(true)} restoreCount={repoBackupCount} />
 
-      {parsed && <VercelRollbackPanel owner={parsed.owner} repo={parsed.repo} />}
 
       <DiffBadge />
 
@@ -961,7 +829,6 @@ function FilesTab({ token, selectedRepo, setSelectedRepo }) {
         const data = await readFileAsUint8(file);
         processed.push({ name: repoPath.trim(), data });
       }
-      const vercelCfg = getVercelConfig(parsed.owner, parsed.repo);
       const result = await smartPush({ filesToProcess: processed, ...parsed, token, commitMsg, log, backupEnabled });
       setSummary(result);
       setStatus("done");
@@ -971,13 +838,6 @@ function FilesTab({ token, selectedRepo, setSelectedRepo }) {
         added: result.added, updated: result.updated, skipped: result.skipped,
         status: result.newSha ? "success" : "no-changes",
       });
-      if (result.newSha && vercelCfg?.autoRollback) {
-        monitorVercelDeployment({
-          owner: parsed.owner, repo: parsed.repo, branch: result.branch,
-          prevSha: result.prevSha, newSha: result.newSha,
-          githubToken: token, vercelToken: vercelCfg.token, vercelProjectId: vercelCfg.projectId, log,
-        });
-      }
     } catch (e) {
       log(`❌ ${e.message}`, "error"); setStatus("error");
       addHistoryEntry({ owner: parsed.owner, repo: parsed.repo, branch: "", commitMsg, source: "files", status: "failed", error: e.message });
@@ -1051,7 +911,6 @@ function FilesTab({ token, selectedRepo, setSelectedRepo }) {
 
       <BackupToggle enabled={backupEnabled} setEnabled={setBackupEnabled} onOpenRestorePoints={() => setShowRestore(true)} restoreCount={repoBackupCount} />
 
-      {parsedRepo && <VercelRollbackPanel owner={parsedRepo.owner} repo={parsedRepo.repo} />}
 
       <DiffBadge />
 
