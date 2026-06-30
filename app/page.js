@@ -293,25 +293,30 @@ function triggerBlobDownload(blob, filename) {
 }
 
 // ── Vercel Account Cloud Storage ──────────────────────────
-async function loadVercelAccountFromCloud() {
+// Har GitHub account (accountId) ka apna alag Vercel connection save hota hai,
+// taaki GitHub account switch karne par Vercel disconnect na karna pade.
+function vercelQueryParam(accountId) {
+  return accountId ? `?accountId=${encodeURIComponent(accountId)}` : "";
+}
+async function loadVercelAccountFromCloud(accountId) {
   try {
-    const res = await fetch("/api/vercel-account");
+    const res = await fetch(`/api/vercel-account${vercelQueryParam(accountId)}`);
     if (!res.ok) return null;
     const data = await res.json();
     return data.vercelAccount || null;
   } catch (e) { console.error("Vercel account load failed:", e); return null; }
 }
-async function saveVercelAccountToCloud(vercelAccount) {
+async function saveVercelAccountToCloud(vercelAccount, accountId) {
   try {
     await fetch("/api/vercel-account", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ vercelAccount }),
+      body: JSON.stringify({ vercelAccount, accountId }),
     });
   } catch (e) { console.error("Vercel account save failed:", e); }
 }
-async function disconnectVercelAccount() {
-  try { await fetch("/api/vercel-account", { method: "DELETE" }); } catch {}
+async function disconnectVercelAccount(accountId) {
+  try { await fetch(`/api/vercel-account${vercelQueryParam(accountId)}`, { method: "DELETE" }); } catch {}
 }
 
 // ── Vercel REST API ────────────────────────────────────────
@@ -362,6 +367,46 @@ async function deleteVercelEnv(token, projectId, envId, teamId) {
     headers: { Authorization: `Bearer ${token}` },
   });
   if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.error?.message || "Env delete nahi hua"); }
+  return res.json();
+}
+
+async function fetchVercelEnvValue(token, projectId, envId, teamId) {
+  const qs = teamId ? `?decrypt=true&teamId=${encodeURIComponent(teamId)}` : "?decrypt=true";
+  const res = await fetch(`${VERCEL_API}/v9/projects/${projectId}/env/${envId}${qs}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.error?.message || "Value fetch nahi hua"); }
+  const data = await res.json();
+  return data.value ?? "";
+}
+
+async function fetchLatestVercelDeployment(token, projectId, teamId) {
+  const qs = teamId ? `&teamId=${encodeURIComponent(teamId)}` : "";
+  const res = await fetch(`${VERCEL_API}/v6/deployments?projectId=${projectId}&limit=1${qs}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error("Deployments fetch nahi hue");
+  const data = await res.json();
+  return data.deployments?.[0] || null;
+}
+
+// Existing project ka latest deployment clone karke fresh deploy trigger karta
+// hai — taaki env variable add/update/delete karne ke baad naya value/build
+// live ho jaaye (warna purana build hi serve hota rehta hai).
+async function triggerVercelRedeploy(token, project, teamId) {
+  const latest = await fetchLatestVercelDeployment(token, project.id, teamId);
+  if (!latest) throw new Error("Koi pehle se deployment nahi mila — Vercel dashboard se ek baar manually deploy karo");
+  const res = await fetch(`${VERCEL_API}/v13/deployments${vercelQS(teamId)}`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      name: project.name,
+      project: project.id,
+      deploymentId: latest.uid,
+      target: latest.target || "production",
+    }),
+  });
+  if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.error?.message || "Redeploy nahi hua"); }
   return res.json();
 }
 
@@ -1567,7 +1612,7 @@ function AccountsSkeleton() {
 // ── Left Sidebar — Vercel Env Variables connect/add/update ─
 const VERCEL_TARGETS = [["production", "Production"], ["preview", "Preview"], ["development", "Development"]];
 
-function VercelEnvPanel({ open }) {
+function VercelEnvPanel({ open, activeAccountId }) {
   const [account, setAccount] = useState(null); // {token, teamId, login, name, avatar}
   const [loadingAccount, setLoadingAccount] = useState(true);
 
@@ -1594,21 +1639,29 @@ function VercelEnvPanel({ open }) {
 
   const [editingId, setEditingId] = useState(null);
   const [editValue, setEditValue] = useState("");
+  const [editLoading, setEditLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+
+  const [deleteConfirmEnv, setDeleteConfirmEnv] = useState(null); // env pending delete confirmation
+  const [deleting, setDeleting] = useState(false);
+  const [deployMsg, setDeployMsg] = useState(null); // {ok, text} — redeploy status
 
   const loadedOnce = useRef(false);
 
-  // Load saved Vercel account once sidebar is first opened
+  // Load saved Vercel account jab sidebar pehli baar khule, aur jab bhi
+  // active GitHub account switch ho — har GitHub account ka apna Vercel
+  // connection alag hota hai, isliye disconnect karne ki zaroorat nahi.
   useEffect(() => {
-    if (!open || loadedOnce.current) return;
+    if (!open) return;
     loadedOnce.current = true;
+    setProjects([]); setSelectedProjectId(""); setEnvs([]);
     (async () => {
       setLoadingAccount(true);
-      const acc = await loadVercelAccountFromCloud();
+      const acc = await loadVercelAccountFromCloud(activeAccountId);
       setAccount(acc);
       setLoadingAccount(false);
     })();
-  }, [open]);
+  }, [open, activeAccountId]);
 
   // Once connected, load projects
   useEffect(() => {
@@ -1629,7 +1682,7 @@ function VercelEnvPanel({ open }) {
     finally { setEnvsLoading(false); }
   };
 
-  useEffect(() => { if (selectedProjectId) loadEnvs(selectedProjectId); else setEnvs([]); }, [selectedProjectId]);
+  useEffect(() => { setDeployMsg(null); setDeleteConfirmEnv(null); setEditingId(null); if (selectedProjectId) loadEnvs(selectedProjectId); else setEnvs([]); }, [selectedProjectId]);
 
   // PAT test — verifies the token works and fetches the user's profile
   const handleTestPat = async () => {
@@ -1649,42 +1702,84 @@ function VercelEnvPanel({ open }) {
     if (!testResult?.ok) return;
     const acc = { token: patInput.trim(), teamId: teamIdInput.trim() || null, login: testResult.login, name: testResult.name, avatar: testResult.avatar };
     setAccount(acc);
-    await saveVercelAccountToCloud(acc);
+    await saveVercelAccountToCloud(acc, activeAccountId);
     setPatInput(""); setTeamIdInput(""); setTestResult(null); setPatVisible(false);
   };
 
   const handleDisconnect = async () => {
-    await disconnectVercelAccount();
+    await disconnectVercelAccount(activeAccountId);
     setAccount(null); setProjects([]); setSelectedProjectId(""); setEnvs([]);
   };
 
   const toggleTarget = (t) => setNewTargets(prev => prev.includes(t) ? prev.filter(x => x !== t) : [...prev, t]);
 
+  const selectedProject = projects.find(p => p.id === selectedProjectId) || null;
+
+  // Add/update/delete ke baad project ka latest deployment redeploy trigger
+  // karta hai, taaki naya env value turant live ho jaaye — warna purana build
+  // hi serve hota rehta hai.
+  const redeployAfterChange = async () => {
+    if (!selectedProject) return;
+    setDeployMsg({ ok: null, text: "🔁 Redeploy ho raha hai…" });
+    try {
+      await triggerVercelRedeploy(account.token, selectedProject, account.teamId);
+      setDeployMsg({ ok: true, text: "✅ Redeploy trigger ho gaya, 1-2 min mein live ho jayega" });
+    } catch (e) {
+      setDeployMsg({ ok: false, text: `⚠️ Redeploy nahi ho saka: ${e.message}. Vercel dashboard se manually redeploy kar lo.` });
+    }
+  };
+
   const handleAddEnv = async () => {
     if (!newKey.trim() || !newValue || !newTargets.length || !selectedProjectId) return;
-    setAdding(true); setAddMsg(null);
+    setAdding(true); setAddMsg(null); setDeployMsg(null);
     try {
       await addVercelEnv(account.token, selectedProjectId, account.teamId, { key: newKey.trim(), value: newValue, target: newTargets });
       setAddMsg({ ok: true, text: `✅ ${newKey.trim()} added` });
       setNewKey(""); setNewValue("");
       await loadEnvs(selectedProjectId);
+      await redeployAfterChange();
     } catch (e) { setAddMsg({ ok: false, text: `❌ ${e.message}` }); }
     finally { setAdding(false); }
   };
 
+  // Update par click karte hi existing (decrypted) value fetch karke textarea
+  // mein pehle se bhar deta hai, taaki blank se overwrite na ho jaaye.
+  const handleStartEdit = async (env) => {
+    setEditingId(env.id); setEditValue(""); setEditLoading(true); setEnvsError("");
+    try {
+      const v = await fetchVercelEnvValue(account.token, selectedProjectId, env.id, account.teamId);
+      setEditValue(v);
+    } catch (e) {
+      setEnvsError(`Existing value load nahi hui: ${e.message}`);
+    } finally {
+      setEditLoading(false);
+    }
+  };
+
   const handleUpdateEnv = async (env) => {
-    setSaving(true);
+    setSaving(true); setDeployMsg(null);
     try {
       await updateVercelEnv(account.token, selectedProjectId, env.id, account.teamId, { value: editValue, target: env.target });
       setEditingId(null); setEditValue("");
       await loadEnvs(selectedProjectId);
+      await redeployAfterChange();
     } catch (e) { setEnvsError(e.message); }
     finally { setSaving(false); }
   };
 
-  const handleDeleteEnv = async (env) => {
-    try { await deleteVercelEnv(account.token, selectedProjectId, env.id, account.teamId); await loadEnvs(selectedProjectId); }
-    catch (e) { setEnvsError(e.message); }
+  // Delete seedha nahi hota — pehle confirm modal khulta hai (handleDeleteEnv
+  // sirf request kholta hai, asli delete confirmDeleteEnv se hoti hai).
+  const handleDeleteEnv = (env) => setDeleteConfirmEnv(env);
+
+  const confirmDeleteEnv = async () => {
+    if (!deleteConfirmEnv) return;
+    setDeleting(true); setDeployMsg(null);
+    try {
+      await deleteVercelEnv(account.token, selectedProjectId, deleteConfirmEnv.id, account.teamId);
+      await loadEnvs(selectedProjectId);
+      await redeployAfterChange();
+    } catch (e) { setEnvsError(e.message); }
+    finally { setDeleting(false); setDeleteConfirmEnv(null); }
   };
 
   const inp = { width: "100%", boxSizing: "border-box", background: "#0d1117", border: "1px solid #30363d", color: "#c9d1d9", borderRadius: "6px", padding: "8px 10px", fontSize: "11.5px", outline: "none", fontFamily: "inherit" };
@@ -1800,15 +1895,15 @@ function VercelEnvPanel({ open }) {
                   </div>
                   {editingId === env.id ? (
                     <>
-                      <textarea value={editValue} onChange={e => setEditValue(e.target.value)} rows={2} style={{ ...inp, resize: "vertical", fontFamily: "monospace" }} />
+                      <textarea value={editLoading ? "⏳ Loading existing value…" : editValue} onChange={e => setEditValue(e.target.value)} disabled={editLoading} rows={2} style={{ ...inp, resize: "vertical", fontFamily: "monospace", opacity: editLoading ? 0.6 : 1 }} />
                       <div style={{ display: "flex", gap: "6px" }}>
-                        <button onClick={() => handleUpdateEnv(env)} disabled={saving} style={{ flex: 1, padding: "6px", borderRadius: "5px", fontSize: "10.5px", fontFamily: "inherit", fontWeight: 600, cursor: "pointer", background: "#238636", color: "#fff", border: "1px solid #2ea043" }}>{saving ? "⏳" : "Save"}</button>
+                        <button onClick={() => handleUpdateEnv(env)} disabled={saving || editLoading} style={{ flex: 1, padding: "6px", borderRadius: "5px", fontSize: "10.5px", fontFamily: "inherit", fontWeight: 600, cursor: "pointer", background: "#238636", color: "#fff", border: "1px solid #2ea043" }}>{saving ? "⏳" : "Save"}</button>
                         <button onClick={() => { setEditingId(null); setEditValue(""); }} style={{ flex: 1, padding: "6px", borderRadius: "5px", fontSize: "10.5px", fontFamily: "inherit", fontWeight: 600, cursor: "pointer", background: "#161b22", color: "#8b949e", border: "1px solid #30363d" }}>Cancel</button>
                       </div>
                     </>
                   ) : (
                     <div style={{ display: "flex", gap: "6px" }}>
-                      <button onClick={() => { setEditingId(env.id); setEditValue(""); }} style={{ flex: 1, padding: "6px", borderRadius: "5px", fontSize: "10.5px", fontFamily: "inherit", fontWeight: 600, cursor: "pointer", background: "#161b22", color: "#58a6ff", border: "1px solid #30363d" }}>✏️ Update</button>
+                      <button onClick={() => handleStartEdit(env)} style={{ flex: 1, padding: "6px", borderRadius: "5px", fontSize: "10.5px", fontFamily: "inherit", fontWeight: 600, cursor: "pointer", background: "#161b22", color: "#58a6ff", border: "1px solid #30363d" }}>✏️ Update</button>
                       <button onClick={() => handleDeleteEnv(env)} style={{ padding: "6px 8px", borderRadius: "5px", fontSize: "10.5px", fontFamily: "inherit", fontWeight: 600, cursor: "pointer", background: "#161b22", color: "#f85149", border: "1px solid #30363d" }}>🗑️</button>
                     </div>
                   )}
@@ -1817,13 +1912,41 @@ function VercelEnvPanel({ open }) {
               {!envsLoading && envs.length === 0 && <div style={{ fontSize: "11px", color: "#484f58", textAlign: "center", padding: "10px" }}>Koi env variable nahi hai</div>}
             </div>
           </div>
+
+          {deployMsg && (
+            <div style={{ fontSize: "10.5px", color: deployMsg.ok === false ? "#f85149" : deployMsg.ok === true ? "#3fb950" : "#8b949e", background: "#0d1117", border: "1px solid #21262d", borderRadius: "6px", padding: "7px 9px" }}>
+              {deployMsg.text}
+            </div>
+          )}
+
+          {/* Delete confirmation — galti se tap hone par seedha delete nahi hota */}
+          {deleteConfirmEnv && (
+            <div
+              onClick={() => !deleting && setDeleteConfirmEnv(null)}
+              style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center", padding: "20px" }}
+            >
+              <div
+                onClick={e => e.stopPropagation()}
+                style={{ background: "#161b22", border: "1px solid #30363d", borderRadius: "10px", padding: "16px", width: "100%", maxWidth: "280px", display: "flex", flexDirection: "column", gap: "10px" }}
+              >
+                <div style={{ fontSize: "13px", fontWeight: 700, color: "#f0f6fc" }}>🗑️ Env variable delete karein?</div>
+                <div style={{ fontSize: "11.5px", color: "#8b949e" }}>
+                  <code style={{ color: "#f0f6fc", fontWeight: 700 }}>{deleteConfirmEnv.key}</code> hamesha ke liye delete ho jayega aur project apne aap redeploy hoga.
+                </div>
+                <div style={{ display: "flex", gap: "8px", marginTop: "4px" }}>
+                  <button onClick={() => setDeleteConfirmEnv(null)} disabled={deleting} style={{ flex: 1, padding: "8px", borderRadius: "6px", fontSize: "11.5px", fontFamily: "inherit", fontWeight: 600, cursor: "pointer", background: "#0d1117", color: "#c9d1d9", border: "1px solid #30363d" }}>Cancel</button>
+                  <button onClick={confirmDeleteEnv} disabled={deleting} style={{ flex: 1, padding: "8px", borderRadius: "6px", fontSize: "11.5px", fontFamily: "inherit", fontWeight: 600, cursor: "pointer", background: "#da3633", color: "#fff", border: "1px solid #f85149" }}>{deleting ? "⏳ Delete ho raha…" : "Delete Karo"}</button>
+                </div>
+              </div>
+            </div>
+          )}
         </>
       )}
     </div>
   );
 }
 
-function Sidebar({ open, onClose }) {
+function Sidebar({ open, onClose, activeAccountId }) {
   return (
     <>
       {/* Backdrop */}
@@ -1853,7 +1976,7 @@ function Sidebar({ open, onClose }) {
         </div>
 
         <div style={{ overflowY: "auto", flex: 1 }}>
-          <VercelEnvPanel open={open} />
+          <VercelEnvPanel open={open} activeAccountId={activeAccountId} />
         </div>
       </div>
     </>
@@ -2076,7 +2199,7 @@ export default function ZipPusherPage() {
       </div>
 
       {/* Left Sidebar drawer — Vercel env variables */}
-      <Sidebar open={sidebarOpen} onClose={() => setSidebarOpen(false)} />
+      <Sidebar open={sidebarOpen} onClose={() => setSidebarOpen(false)} activeAccountId={activeAccountId} />
 
       {/* Add Account Modal */}
       {showAddModal && (
