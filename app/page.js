@@ -750,6 +750,144 @@ function AccountsTab({ activeAccountId, setActiveAccountId, accounts, setAccount
   );
 }
 
+// ── Add Account Modal ────────────────────────────────────
+function AddAccountModal({ onClose, accounts, setAccounts, setActiveAccountId, activeAccountId }) {
+  const [label, setLabel] = useState("");
+  const [pat, setPat] = useState("");
+  const [patVisible, setPatVisible] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState(null);
+
+  const inp = { width: "100%", boxSizing: "border-box", background: "#0d1117", border: "1px solid #30363d", color: "#c9d1d9", borderRadius: "6px", padding: "9px 12px", fontSize: "12px", outline: "none", fontFamily: "inherit" };
+
+  const handleTest = async () => {
+    if (!pat.trim()) return;
+    setTesting(true); setTestResult(null);
+    try {
+      const res = await fetch("https://api.github.com/user", { headers: { Authorization: `token ${pat.trim()}`, Accept: "application/vnd.github.v3+json" } });
+      if (!res.ok) throw new Error("Invalid");
+      const d = await res.json();
+      setTestResult({ ok: true, login: d.login, name: d.name, avatar: d.avatar_url });
+    } catch { setTestResult({ ok: false }); }
+    finally { setTesting(false); }
+  };
+
+  const handleAdd = () => {
+    if (!label.trim() || !pat.trim() || !testResult?.ok) return;
+    const newAcc = { id: Math.random().toString(36).slice(2), label: label.trim(), pat: pat.trim(), login: testResult.login, avatar: testResult.avatar };
+    const updated = [...accounts, newAcc];
+    saveAccounts(updated); setAccounts(updated);
+    if (!activeAccountId) { saveActiveId(newAcc.id); setActiveAccountId(newAcc.id); }
+    onClose();
+  };
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center", padding: "16px" }} onClick={onClose}>
+      <div onClick={e => e.stopPropagation()} style={{ background: "#161b22", border: "1px solid #30363d", borderRadius: "12px", padding: "18px", width: "100%", maxWidth: "360px", display: "flex", flexDirection: "column", gap: "12px" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div style={{ fontSize: "14px", fontWeight: 700, color: "#f0f6fc" }}>➕ Add Account</div>
+          <button onClick={onClose} style={{ background: "none", border: "none", color: "#6e7681", fontSize: "18px", cursor: "pointer" }}>✕</button>
+        </div>
+
+        <div>
+          <div style={{ fontSize: "11px", color: "#8b949e", marginBottom: "4px" }}>🏷️ Label</div>
+          <input type="text" value={label} onChange={e => setLabel(e.target.value)} placeholder="e.g. Work, Personal" style={inp} autoFocus />
+        </div>
+
+        <div>
+          <div style={{ fontSize: "11px", color: "#8b949e", marginBottom: "4px" }}>
+            🔑 GitHub PAT &nbsp;
+            <a href="https://github.com/settings/tokens/new?scopes=repo" target="_blank" rel="noopener noreferrer" style={{ color: "#58a6ff", textDecoration: "none" }}>Generate ↗</a>
+          </div>
+          <div style={{ position: "relative" }}>
+            <input type={patVisible ? "text" : "password"} value={pat} onChange={e => { setPat(e.target.value); setTestResult(null); }} placeholder="ghp_xxxxxxxxxxxx" style={{ ...inp, paddingRight: "55px" }} />
+            <button onClick={() => setPatVisible(p => !p)} style={{ position: "absolute", right: "8px", top: "50%", transform: "translateY(-50%)", background: "none", border: "none", color: "#6e7681", cursor: "pointer", fontSize: "11px", fontFamily: "inherit" }}>
+              {patVisible ? "Hide" : "Show"}
+            </button>
+          </div>
+        </div>
+
+        {testResult && (
+          <div style={{ background: testResult.ok ? "#0d1f0d" : "#1f0d0d", border: `1px solid ${testResult.ok ? "#2ea043" : "#da3633"}`, borderRadius: "6px", padding: "8px 10px", fontSize: "11px", display: "flex", alignItems: "center", gap: "8px" }}>
+            {testResult.ok ? (
+              <><img src={testResult.avatar} alt="" style={{ width: "18px", height: "18px", borderRadius: "50%" }} /><span style={{ color: "#3fb950" }}>✅ @{testResult.login}</span></>
+            ) : <span style={{ color: "#f85149" }}>❌ Invalid token</span>}
+          </div>
+        )}
+
+        <div style={{ display: "flex", gap: "8px" }}>
+          <button onClick={handleTest} disabled={testing || !pat.trim()} style={{ flex: 1, padding: "9px", borderRadius: "6px", fontSize: "12px", fontFamily: "inherit", fontWeight: 600, cursor: testing || !pat.trim() ? "not-allowed" : "pointer", background: testing || !pat.trim() ? "#0d1117" : "#1f6feb", color: testing || !pat.trim() ? "#6e7681" : "#fff", border: "1px solid #388bfd" }}>
+            {testing ? "⏳..." : "🔍 Test"}
+          </button>
+          <button onClick={handleAdd} disabled={!testResult?.ok || !label.trim()} style={{ flex: 1, padding: "9px", borderRadius: "6px", fontSize: "12px", fontFamily: "inherit", fontWeight: 600, cursor: !testResult?.ok || !label.trim() ? "not-allowed" : "pointer", background: !testResult?.ok || !label.trim() ? "#0d1117" : "#238636", color: !testResult?.ok || !label.trim() ? "#6e7681" : "#fff", border: "1px solid #2ea043" }}>
+            ✅ Add
+          </button>
+        </div>
+        <div style={{ fontSize: "10px", color: "#484f58", textAlign: "center" }}>Scope chahiye: <code>repo</code></div>
+      </div>
+    </div>
+  );
+}
+
+// ── Switch Account Modal ─────────────────────────────────
+function SwitchAccountModal({ onClose, accounts, setAccounts, activeAccountId, setActiveAccountId, setSelectedRepo, onAddNew }) {
+  const [deleteConfirm, setDeleteConfirm] = useState(null);
+
+  const handleDelete = (id) => {
+    const updated = accounts.filter(a => a.id !== id);
+    saveAccounts(updated); setAccounts(updated);
+    if (activeAccountId === id) { const n = updated[0]?.id || null; saveActiveId(n || ""); setActiveAccountId(n); }
+    setDeleteConfirm(null);
+  };
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center", padding: "16px" }} onClick={onClose}>
+      <div onClick={e => e.stopPropagation()} style={{ background: "#161b22", border: "1px solid #30363d", borderRadius: "12px", width: "100%", maxWidth: "360px", overflow: "hidden", maxHeight: "80vh", display: "flex", flexDirection: "column" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "14px 16px", borderBottom: "1px solid #21262d", flexShrink: 0 }}>
+          <div style={{ fontSize: "14px", fontWeight: 700, color: "#f0f6fc" }}>⇄ Switch Account</div>
+          <button onClick={onClose} style={{ background: "none", border: "none", color: "#6e7681", fontSize: "18px", cursor: "pointer" }}>✕</button>
+        </div>
+
+        <div style={{ overflowY: "auto", flex: 1 }}>
+          {accounts.length === 0 && (
+            <div style={{ padding: "24px", textAlign: "center", fontSize: "12px", color: "#6e7681" }}>Koi account nahi hai</div>
+          )}
+          {accounts.map(acc => {
+            const isActive = acc.id === activeAccountId;
+            return (
+              <div key={acc.id} style={{ display: "flex", alignItems: "center", gap: "10px", padding: "10px 16px", borderBottom: "1px solid #21262d", background: isActive ? "#1f2937" : "transparent" }}>
+                <div style={{ width: "32px", height: "32px", borderRadius: "50%", overflow: "hidden", flexShrink: 0, border: `2px solid ${isActive ? "#2ea043" : "#30363d"}`, background: "#30363d" }}>
+                  {acc.avatar && <img src={acc.avatar} alt="" style={{ width: "100%", height: "100%" }} />}
+                </div>
+                <button
+                  onClick={() => { saveActiveId(acc.id); setActiveAccountId(acc.id); setSelectedRepo(""); onClose(); }}
+                  style={{ flex: 1, textAlign: "left", background: "none", border: "none", cursor: "pointer", fontFamily: "inherit", padding: 0 }}
+                >
+                  <div style={{ fontSize: "13px", fontWeight: 600, color: "#f0f6fc" }}>{acc.label}</div>
+                  <div style={{ fontSize: "10px", color: "#6e7681" }}>@{acc.login}</div>
+                </button>
+                {isActive && <span style={{ color: "#3fb950", fontSize: "14px", flexShrink: 0 }}>✓</span>}
+                {deleteConfirm === acc.id ? (
+                  <div style={{ display: "flex", gap: "4px", flexShrink: 0 }}>
+                    <button onClick={() => handleDelete(acc.id)} style={{ background: "#da3633", border: "none", color: "#fff", borderRadius: "4px", padding: "4px 6px", fontSize: "10px", cursor: "pointer", fontFamily: "inherit" }}>Haan</button>
+                    <button onClick={() => setDeleteConfirm(null)} style={{ background: "#30363d", border: "none", color: "#c9d1d9", borderRadius: "4px", padding: "4px 6px", fontSize: "10px", cursor: "pointer", fontFamily: "inherit" }}>Nahi</button>
+                  </div>
+                ) : (
+                  <button onClick={() => setDeleteConfirm(acc.id)} style={{ background: "none", border: "none", color: "#6e7681", cursor: "pointer", fontSize: "13px", flexShrink: 0 }}>🗑️</button>
+                )}
+              </div>
+            );
+          })}
+        </div>
+
+        <button onClick={() => { onClose(); onAddNew(); }} style={{ padding: "13px 16px", background: "none", border: "none", borderTop: "1px solid #21262d", color: "#58a6ff", fontSize: "13px", fontWeight: 600, cursor: "pointer", fontFamily: "inherit", display: "flex", alignItems: "center", gap: "8px", flexShrink: 0 }}>
+          ➕ Add another account
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ── Main App ──────────────────────────────────────────────
 export default function ZipPusherPage() {
   const { data: session, status: sessionStatus } = useSession();
@@ -760,6 +898,8 @@ export default function ZipPusherPage() {
   const [accounts, setAccounts] = useState([]);
   const [activeAccountId, setActiveAccountId] = useState(null);
   const [showAccountMenu, setShowAccountMenu] = useState(false);
+  const [showAddModal, setShowAddModal] = useState(false);
+  const [showSwitchModal, setShowSwitchModal] = useState(false);
 
   useEffect(() => { if (sessionStatus === "unauthenticated") router.push("/login"); }, [sessionStatus, router]);
 
@@ -816,56 +956,24 @@ export default function ZipPusherPage() {
             <span style={{ color: "#6e7681", fontSize: "10px" }}>▾</span>
           </button>
 
-          {/* Dropdown */}
+          {/* Compact icon bar: + ⇄ ✕ */}
           {showAccountMenu && (
-            <div style={{ position: "fixed", top: "56px", right: "12px", width: "240px", background: "#161b22", border: "1px solid #30363d", borderRadius: "10px", zIndex: 100, boxShadow: "0 8px 24px rgba(0,0,0,0.5)", overflow: "hidden" }}>
-              {/* Header */}
-              <div style={{ padding: "10px 14px", borderBottom: "1px solid #21262d" }}>
-                <div style={{ fontSize: "11px", color: "#6e7681", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em" }}>Switch Account</div>
-              </div>
-
-              {/* Account list */}
-              <div style={{ maxHeight: "280px", overflowY: "auto" }}>
-                {accounts.length === 0 && (
-                  <div style={{ padding: "14px", fontSize: "11px", color: "#6e7681", textAlign: "center" }}>Koi account nahi</div>
-                )}
-                {accounts.map(acc => {
-                  const isActive = acc.id === activeAccountId;
-                  return (
-                    <button key={acc.id}
-                      onClick={() => { saveActiveId(acc.id); setActiveAccountId(acc.id); setSelectedRepo(""); setShowAccountMenu(false); }}
-                      style={{ width: "100%", background: isActive ? "#1f2937" : "none", border: "none", cursor: "pointer", padding: "10px 14px", display: "flex", alignItems: "center", gap: "10px", fontFamily: "inherit", borderBottom: "1px solid #21262d" }}
-                    >
-                      <div style={{ width: "28px", height: "28px", borderRadius: "50%", overflow: "hidden", flexShrink: 0, border: `2px solid ${isActive ? "#2ea043" : "transparent"}`, background: "#30363d" }}>
-                        {acc.avatar && <img src={acc.avatar} alt="" style={{ width: "100%", height: "100%" }} />}
-                      </div>
-                      <div style={{ flex: 1, textAlign: "left", minWidth: 0 }}>
-                        <div style={{ fontSize: "12px", fontWeight: 600, color: "#f0f6fc" }}>{acc.label}</div>
-                        <div style={{ fontSize: "10px", color: "#6e7681" }}>@{acc.login}</div>
-                      </div>
-                      {isActive && <span style={{ fontSize: "14px", color: "#3fb950", flexShrink: 0 }}>✓</span>}
-                    </button>
-                  );
-                })}
-              </div>
-
-              {/* Actions */}
-              <div style={{ borderTop: "1px solid #21262d" }}>
-                <button
-                  onClick={() => { setShowAccountMenu(false); setActiveTab("accounts"); }}
-                  style={{ width: "100%", background: "none", border: "none", cursor: "pointer", padding: "11px 14px", display: "flex", alignItems: "center", gap: "10px", fontFamily: "inherit", color: "#58a6ff" }}
-                >
-                  <span style={{ fontSize: "16px" }}>➕</span>
-                  <span style={{ fontSize: "12px", fontWeight: 600 }}>Add account</span>
-                </button>
-                <button
-                  onClick={() => { setShowAccountMenu(false); signOut({ callbackUrl: "/login" }); }}
-                  style={{ width: "100%", background: "none", border: "none", cursor: "pointer", padding: "11px 14px", display: "flex", alignItems: "center", gap: "10px", fontFamily: "inherit", color: "#8b949e", borderTop: "1px solid #21262d" }}
-                >
-                  <span style={{ fontSize: "16px" }}>🚪</span>
-                  <span style={{ fontSize: "12px" }}>Sign out</span>
-                </button>
-              </div>
+            <div style={{ position: "fixed", top: "56px", right: "12px", display: "flex", gap: "6px", zIndex: 100, background: "#161b22", border: "1px solid #30363d", borderRadius: "10px", padding: "6px", boxShadow: "0 8px 24px rgba(0,0,0,0.5)" }}>
+              <button onClick={() => { setShowAddModal(true); setShowAccountMenu(false); }}
+                title="Add account"
+                style={{ width: "36px", height: "36px", borderRadius: "8px", background: "#21262d", border: "none", color: "#c9d1d9", fontSize: "16px", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                ＋
+              </button>
+              <button onClick={() => { setShowSwitchModal(true); setShowAccountMenu(false); }}
+                title="Switch account"
+                style={{ width: "36px", height: "36px", borderRadius: "8px", background: "#21262d", border: "none", color: "#c9d1d9", fontSize: "15px", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                ⇄
+              </button>
+              <button onClick={() => setShowAccountMenu(false)}
+                title="Close"
+                style={{ width: "36px", height: "36px", borderRadius: "8px", background: "#21262d", border: "none", color: "#8b949e", fontSize: "15px", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                ✕
+              </button>
             </div>
           )}
 
@@ -883,7 +991,6 @@ export default function ZipPusherPage() {
         )}
         {activeTab === "zip" && token && <ZipTab token={token} selectedRepo={selectedRepo} setSelectedRepo={setSelectedRepo} />}
         {activeTab === "files" && token && <FilesTab token={token} selectedRepo={selectedRepo} setSelectedRepo={setSelectedRepo} />}
-        {activeTab === "accounts" && <AccountsTab activeAccountId={activeAccountId} setActiveAccountId={setActiveAccountId} accounts={accounts} setAccounts={setAccounts} />}
       </div>
 
       {/* Bottom Nav */}
@@ -896,6 +1003,30 @@ export default function ZipPusherPage() {
           </button>
         ))}
       </div>
+
+      {/* Add Account Modal */}
+      {showAddModal && (
+        <AddAccountModal
+          onClose={() => setShowAddModal(false)}
+          accounts={accounts}
+          setAccounts={setAccounts}
+          activeAccountId={activeAccountId}
+          setActiveAccountId={setActiveAccountId}
+        />
+      )}
+
+      {/* Switch Account Modal */}
+      {showSwitchModal && (
+        <SwitchAccountModal
+          onClose={() => setShowSwitchModal(false)}
+          accounts={accounts}
+          setAccounts={setAccounts}
+          activeAccountId={activeAccountId}
+          setActiveAccountId={setActiveAccountId}
+          setSelectedRepo={setSelectedRepo}
+          onAddNew={() => setShowAddModal(true)}
+        />
+      )}
     </div>
   );
 }
