@@ -1933,11 +1933,12 @@ function VercelEnvPanel({ open, activeAccountId }) {
 
   const loadedOnce = useRef(false);
 
-  // Load saved Vercel account jab sidebar pehli baar khule, aur jab bhi
-  // active GitHub account switch ho — har GitHub account ka apna Vercel
-  // connection alag hota hai, isliye disconnect karne ki zaroorat nahi.
+  // Load saved Vercel account jab component mount ho (page load par hi,
+  // background mein) aur jab bhi active GitHub account switch ho — sidebar
+  // open/close karne se ab dobara fetch NAHI hota, kyunki "open" ab dependency
+  // nahi hai. Isse jab user sidebar kholega tab data already ready milega,
+  // koi wait nahi karna padega.
   useEffect(() => {
-    if (!open) return;
     loadedOnce.current = true;
     setProjects([]); setSelectedProjectId(""); setEnvs([]);
     (async () => {
@@ -1946,7 +1947,7 @@ function VercelEnvPanel({ open, activeAccountId }) {
       setAccount(acc);
       setLoadingAccount(false);
     })();
-  }, [open, activeAccountId]);
+  }, [activeAccountId]);
 
   // Once connected, load projects
   useEffect(() => {
