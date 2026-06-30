@@ -44,8 +44,8 @@ export async function GET(request) {
     return postAndClose({ type: "gh-connect-error", message: "Invalid state, try again" });
   }
 
-  const clientId = process.env.GITHUB_ID;
-  const clientSecret = process.env.GITHUB_SECRET;
+  const clientId = process.env.GITHUB_CONNECT_ID;
+  const clientSecret = process.env.GITHUB_CONNECT_SECRET;
   const redirectUri = `${url.origin}/api/auth/connect/callback`;
 
   try {

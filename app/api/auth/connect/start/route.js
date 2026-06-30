@@ -8,9 +8,9 @@ export async function GET(request) {
   const url = new URL(request.url);
   const origin = url.origin;
 
-  const clientId = process.env.GITHUB_ID;
+  const clientId = process.env.GITHUB_CONNECT_ID;
   if (!clientId) {
-    return new NextResponse("GITHUB_ID env var missing", { status: 500 });
+    return new NextResponse("GITHUB_CONNECT_ID env var missing", { status: 500 });
   }
 
   // Random state value to prevent CSRF — stored in a short-lived cookie
