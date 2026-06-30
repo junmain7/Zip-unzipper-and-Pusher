@@ -16,10 +16,16 @@ export const metadata = {
   },
 };
 
+export const viewport = {
+  width: "device-width",
+  initialScale: 1,
+  maximumScale: 1,
+};
+
 export default function RootLayout({ children }) {
   return (
-    <html lang="en">
-      <body style={{ margin: 0 }}>
+    <html lang="en" style={{ overflowX: "hidden", width: "100%" }}>
+      <body style={{ margin: 0, overflowX: "hidden", width: "100%", maxWidth: "100vw" }}>
         <Providers>{children}</Providers>
         <script
           dangerouslySetInnerHTML={{
