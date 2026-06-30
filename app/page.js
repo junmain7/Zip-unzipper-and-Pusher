@@ -390,6 +390,18 @@ async function fetchLatestVercelDeployment(token, projectId, teamId) {
   return data.deployments?.[0] || null;
 }
 
+// Recent deployments list (for history/status panel) — readyState includes
+// QUEUED, BUILDING, INITIALIZING, READY, ERROR, CANCELED
+async function fetchVercelDeployments(token, projectId, teamId, limit = 8) {
+  const qs = teamId ? `&teamId=${encodeURIComponent(teamId)}` : "";
+  const res = await fetch(`${VERCEL_API}/v6/deployments?projectId=${projectId}&limit=${limit}${qs}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error("Deployments fetch nahi hue");
+  const data = await res.json();
+  return data.deployments || [];
+}
+
 // Existing project ka latest deployment clone karke fresh deploy trigger karta
 // hai — taaki env variable add/update/delete karne ke baad naya value/build
 // live ho jaaye (warna purana build hi serve hota rehta hai).
@@ -1667,6 +1679,119 @@ function AccountsSkeleton() {
 // ── Left Sidebar — Vercel Env Variables connect/add/update ─
 const VERCEL_TARGETS = [["production", "Production"], ["preview", "Preview"], ["development", "Development"]];
 
+// ── Deployment Status / History Panel ───────────────────────
+// Shows Vercel deployment history with live status badge (Building/Ready/
+// Error/Queued) and an elapsed-time counter for in-progress builds. Polls
+// every 4s while any deployment is still building/queued, stops once settled.
+function statusMeta(state) {
+  switch (state) {
+    case "READY": return { label: "Ready", color: "#3fb950", bg: "rgba(63,185,80,0.12)", icon: "✅" };
+    case "ERROR": return { label: "Failed", color: "#f85149", bg: "rgba(248,81,73,0.12)", icon: "❌" };
+    case "CANCELED": return { label: "Canceled", color: "#8b949e", bg: "rgba(139,148,158,0.12)", icon: "⛔" };
+    case "BUILDING": return { label: "Building", color: "#d29922", bg: "rgba(210,153,34,0.12)", icon: "🔨" };
+    case "INITIALIZING": return { label: "Initializing", color: "#d29922", bg: "rgba(210,153,34,0.12)", icon: "⚙️" };
+    case "QUEUED": return { label: "Queued", color: "#58a6ff", bg: "rgba(88,166,255,0.12)", icon: "⏳" };
+    default: return { label: state || "Unknown", color: "#8b949e", bg: "rgba(139,148,158,0.12)", icon: "•" };
+  }
+}
+
+function ElapsedTimer({ startMs }) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, []);
+  const secs = Math.max(0, Math.floor((now - startMs) / 1000));
+  const mm = Math.floor(secs / 60), ss = secs % 60;
+  return <span>{mm}:{String(ss).padStart(2, "0")}</span>;
+}
+
+function DeploymentStatusPanel({ token, project, teamId }) {
+  const [deployments, setDeployments] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const pollRef = useRef(null);
+
+  const load = async () => {
+    try {
+      const list = await fetchVercelDeployments(token, project.id, teamId, 8);
+      setDeployments(list);
+      setError("");
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    setLoading(true); setDeployments([]);
+    load();
+    return () => { if (pollRef.current) clearInterval(pollRef.current); };
+  }, [project?.id]);
+
+  const isActive = (d) => ["BUILDING", "INITIALIZING", "QUEUED"].includes(d.readyState || d.state);
+
+  useEffect(() => {
+    if (pollRef.current) clearInterval(pollRef.current);
+    const anyActive = deployments.some(isActive);
+    if (anyActive) {
+      pollRef.current = setInterval(load, 4000);
+    }
+    return () => { if (pollRef.current) clearInterval(pollRef.current); };
+  }, [deployments, project?.id]);
+
+  if (loading) {
+    return <div style={{ fontSize: "11px", color: "#6e7681", padding: "10px 0" }}>⏳ Deployments load ho rahe hain…</div>;
+  }
+  if (error) {
+    return <div style={{ fontSize: "11px", color: "#f85149", padding: "8px 0" }}>⚠️ {error}</div>;
+  }
+  if (!deployments.length) {
+    return <div style={{ fontSize: "11px", color: "#484f58", padding: "8px 0" }}>Koi deployment nahi mila.</div>;
+  }
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+      <div style={{ fontSize: "11px", fontWeight: 700, color: "#58a6ff", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <span>🚀 Deployments</span>
+        <button onClick={load} style={{ background: "none", border: "none", color: "#6e7681", fontSize: "11px", cursor: "pointer" }}>⟳</button>
+      </div>
+      {deployments.map((d) => {
+        const state = d.readyState || d.state;
+        const meta = statusMeta(state);
+        const active = isActive(d);
+        const created = d.createdAt || d.created;
+        return (
+          <div key={d.uid} style={{ background: "#0d1117", border: "1px solid #30363d", borderRadius: "8px", padding: "9px 10px", display: "flex", flexDirection: "column", gap: "4px" }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "6px", minWidth: 0 }}>
+                <span style={{ fontSize: "10px", fontWeight: 700, color: meta.color, background: meta.bg, borderRadius: "5px", padding: "2px 6px", flexShrink: 0, display: "flex", alignItems: "center", gap: "4px" }}>
+                  {meta.icon} {meta.label}
+                </span>
+                <span style={{ fontSize: "10.5px", color: "#8b949e", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {(d.meta?.githubCommitMessage || d.target || "deployment").toString().slice(0, 40)}
+                </span>
+              </div>
+              <span style={{ fontSize: "10px", color: "#6e7681", flexShrink: 0 }}>
+                {active ? <>⏱ <ElapsedTimer startMs={created} /></> : new Date(created).toLocaleString()}
+              </span>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px" }}>
+              <code style={{ fontSize: "10px", color: "#6e7681" }}>{d.target || "preview"}</code>
+              {d.url && (
+                <a href={`https://${d.url}`} target="_blank" rel="noreferrer" style={{ fontSize: "10px", color: "#58a6ff", textDecoration: "none" }}>
+                  {d.url} ↗
+                </a>
+              )}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function VercelEnvPanel({ open, activeAccountId }) {
   const [account, setAccount] = useState(null); // {token, teamId, login, name, avatar}
   const [loadingAccount, setLoadingAccount] = useState(true);
@@ -1929,6 +2054,10 @@ function VercelEnvPanel({ open, activeAccountId }) {
       </div>
 
       {connectError && <div style={{ fontSize: "11px", color: "#f85149" }}>⚠️ {connectError}</div>}
+
+      {selectedProjectId && selectedProject && (
+        <DeploymentStatusPanel token={account.token} project={selectedProject} teamId={account.teamId} />
+      )}
 
       {selectedProjectId && (
         <>
