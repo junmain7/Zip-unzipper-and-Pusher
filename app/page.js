@@ -1826,6 +1826,12 @@ function VercelEnvPanel({ open, activeAccountId }) {
   const [deleting, setDeleting] = useState(false);
   const [deployMsg, setDeployMsg] = useState(null); // {ok, text} — redeploy status
 
+  // Sidebar ke andar 2 sub-tabs — "Deployment" (default, status/history dikhata
+  // hai) aur "Variables" (env vars add/update/delete). Project switch hone par
+  // wapas Deployment tab par reset ho jaata hai.
+  const [panelTab, setPanelTab] = useState("deployment");
+  useEffect(() => { setPanelTab("deployment"); }, [selectedProjectId]);
+
   const loadedOnce = useRef(false);
 
   // Load saved Vercel account jab sidebar pehli baar khule, aur jab bhi
@@ -2056,10 +2062,30 @@ function VercelEnvPanel({ open, activeAccountId }) {
       {connectError && <div style={{ fontSize: "11px", color: "#f85149" }}>⚠️ {connectError}</div>}
 
       {selectedProjectId && selectedProject && (
-        <DeploymentStatusPanel token={account.token} project={selectedProject} teamId={account.teamId} />
+        <>
+          {/* Deployment | Variables sub-tabs */}
+          <div style={{ display: "flex", background: "#0d1117", border: "1px solid #30363d", borderRadius: "8px", padding: "3px", gap: "3px" }}>
+            <button
+              onClick={() => setPanelTab("deployment")}
+              style={{ flex: 1, padding: "7px", borderRadius: "6px", fontSize: "11px", fontFamily: "inherit", fontWeight: 700, cursor: "pointer", border: "none", background: panelTab === "deployment" ? "#1f6feb" : "transparent", color: panelTab === "deployment" ? "#fff" : "#8b949e" }}
+            >
+              🚀 Deployment
+            </button>
+            <button
+              onClick={() => setPanelTab("variables")}
+              style={{ flex: 1, padding: "7px", borderRadius: "6px", fontSize: "11px", fontFamily: "inherit", fontWeight: 700, cursor: "pointer", border: "none", background: panelTab === "variables" ? "#1f6feb" : "transparent", color: panelTab === "variables" ? "#fff" : "#8b949e" }}
+            >
+              🔑 Variables
+            </button>
+          </div>
+
+          {panelTab === "deployment" && (
+            <DeploymentStatusPanel token={account.token} project={selectedProject} teamId={account.teamId} />
+          )}
+        </>
       )}
 
-      {selectedProjectId && (
+      {selectedProjectId && panelTab === "variables" && (
         <>
           {/* Add new env var */}
           <div style={{ background: "#0d1117", border: "1px solid #30363d", borderRadius: "8px", padding: "12px", display: "flex", flexDirection: "column", gap: "8px" }}>
@@ -2444,8 +2470,20 @@ export default function ZipPusherPage() {
             ⚠️ Pehle <strong>Accounts</strong> tab mein ek account add karo
           </div>
         )}
-        {activeTab === "zip" && token && <ZipTab token={token} selectedRepo={selectedRepo} setSelectedRepo={setSelectedRepo} />}
-        {activeTab === "files" && token && <FilesTab token={token} selectedRepo={selectedRepo} setSelectedRepo={setSelectedRepo} />}
+        {/* zip/files tabs ko hamesha mounted rakha hai (display:none se chhupaya
+            hai, unmount nahi kiya) — taaki push chal raha ho aur beech mein
+            tab switch ho jaaye, to wapas us tab par aane par push logs zinda
+            milein, dobara se shuru na karna pade. */}
+        {token && (
+          <div style={{ display: activeTab === "zip" ? "block" : "none" }}>
+            <ZipTab token={token} selectedRepo={selectedRepo} setSelectedRepo={setSelectedRepo} />
+          </div>
+        )}
+        {token && (
+          <div style={{ display: activeTab === "files" ? "block" : "none" }}>
+            <FilesTab token={token} selectedRepo={selectedRepo} setSelectedRepo={setSelectedRepo} />
+          </div>
+        )}
         {activeTab === "history" && token && <HistoryTab token={token} />}
       </div>
 
