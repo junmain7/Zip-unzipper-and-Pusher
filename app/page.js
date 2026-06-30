@@ -226,10 +226,14 @@ async function downloadRepoZip(owner, repo, branch, token) {
   });
   if (!res.ok) throw new Error(`ZIP download error: ${res.status}`);
   const blob = await res.blob();
+  triggerBlobDownload(blob, `${repo}-${branch}.zip`);
+}
+
+function triggerBlobDownload(blob, filename) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = `${repo}-${branch}.zip`;
+  a.download = filename;
   document.body.appendChild(a);
   a.click();
   a.remove();
