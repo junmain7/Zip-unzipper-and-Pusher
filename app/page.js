@@ -15,6 +15,26 @@ function loadActiveId() { return localStorage.getItem(ACTIVE_KEY) || null; }
 function saveActiveId(id) { if (id) localStorage.setItem(ACTIVE_KEY, id); else localStorage.removeItem(ACTIVE_KEY); }
 function maskPat(pat) { if (!pat || pat.length < 8) return "••••••••"; return pat.slice(0, 4) + "••••••" + pat.slice(-4); }
 
+// ── Cloud sync — accounts cross-device available (via server-side API, NextAuth session-verified) ──
+async function loadAccountsFromCloud() {
+  try {
+    const res = await fetch("/api/accounts");
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (!data.accounts) return null;
+    return data;
+  } catch (e) { console.error("Cloud load failed:", e); return null; }
+}
+async function saveAccountsToCloud(accounts, activeId) {
+  try {
+    await fetch("/api/accounts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ accounts, activeId }),
+    });
+  } catch (e) { console.error("Cloud save failed:", e); }
+}
+
 // ── Backup / Restore-point Storage ────────────────────────
 const BACKUPS_KEY = "ghpusher_backups";
 function loadBackups() { try { return JSON.parse(localStorage.getItem(BACKUPS_KEY) || "[]"); } catch { return []; } }
@@ -1407,12 +1427,36 @@ export default function ZipPusherPage() {
   useEffect(() => { if (sessionStatus === "unauthenticated") router.push("/login"); }, [sessionStatus, router]);
 
   useEffect(() => {
-    const saved = loadAccounts();
-    const savedActive = loadActiveId();
-    setAccounts(saved);
-    if (savedActive && saved.find(a => a.id === savedActive)) setActiveAccountId(savedActive);
-    else if (saved.length > 0) { setActiveAccountId(saved[0].id); saveActiveId(saved[0].id); }
-  }, []);
+    if (sessionStatus !== "authenticated") return;
+    (async () => {
+      const local = loadAccounts();
+      const localActive = loadActiveId();
+      const cloud = await loadAccountsFromCloud();
+
+      // Cloud data wins if it exists (so dusra device pe latest milta hai),
+      // warna local data ko hi cloud mein pehli baar push kar do.
+      const finalAccounts = cloud?.accounts?.length ? cloud.accounts : local;
+      const finalActive = cloud?.activeId || localActive;
+
+      setAccounts(finalAccounts);
+      saveAccounts(finalAccounts);
+      if (finalActive && finalAccounts.find(a => a.id === finalActive)) {
+        setActiveAccountId(finalActive);
+        saveActiveId(finalActive);
+      } else if (finalAccounts.length > 0) {
+        setActiveAccountId(finalAccounts[0].id);
+        saveActiveId(finalAccounts[0].id);
+      }
+
+      if (!cloud) saveAccountsToCloud(finalAccounts, finalActive || finalAccounts[0]?.id || null);
+    })();
+  }, [sessionStatus]);
+
+  // Har baar accounts/active change ho, cloud (Firestore via server API) mein bhi sync kar do
+  useEffect(() => {
+    if (sessionStatus !== "authenticated") return;
+    saveAccountsToCloud(accounts, activeAccountId);
+  }, [accounts, activeAccountId, sessionStatus]);
 
   // Close dropdown on outside click
   useEffect(() => {

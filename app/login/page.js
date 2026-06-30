@@ -15,19 +15,19 @@ export default function LoginPage() {
       padding: "16px",
     }}>
       <div style={{ textAlign: "center" }}>
-        <div style={{ fontSize: "40px", marginBottom: "12px" }}>🐙</div>
+        <div style={{ fontSize: "40px", marginBottom: "12px" }}>📦</div>
         <div style={{ fontSize: "16px", fontWeight: 700, color: "#f0f6fc", marginBottom: "6px" }}>
           ZIP → GitHub Pusher
         </div>
         <div style={{ fontSize: "12px", color: "#8b949e", marginBottom: "24px" }}>
-          Login karo apne GitHub account se
+          Login karo apne Google account se
         </div>
         <button
-          onClick={() => signIn("github", { callbackUrl: "/" })}
+          onClick={() => signIn("google", { callbackUrl: "/" })}
           style={{
             padding: "12px 24px",
-            background: "#238636",
-            color: "#fff",
+            background: "#fff",
+            color: "#1f1f1f",
             border: "1px solid #2ea043",
             borderRadius: "8px",
             fontSize: "14px",
@@ -36,7 +36,7 @@ export default function LoginPage() {
             fontFamily: "inherit",
           }}
         >
-          🔐 Login with GitHub
+          🔐 Login with Google
         </button>
       </div>
     </div>
