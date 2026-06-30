@@ -900,6 +900,7 @@ export default function ZipPusherPage() {
   const [showAccountMenu, setShowAccountMenu] = useState(false);
   const [showAddModal, setShowAddModal] = useState(false);
   const [showSwitchModal, setShowSwitchModal] = useState(false);
+  const menuRef = useRef();
 
   useEffect(() => { if (sessionStatus === "unauthenticated") router.push("/login"); }, [sessionStatus, router]);
 
@@ -910,6 +911,22 @@ export default function ZipPusherPage() {
     if (savedActive && saved.find(a => a.id === savedActive)) setActiveAccountId(savedActive);
     else if (saved.length > 0) { setActiveAccountId(saved[0].id); saveActiveId(saved[0].id); }
   }, []);
+
+  // Close dropdown on outside click
+  useEffect(() => {
+    if (!showAccountMenu) return;
+    const handleClickOutside = (e) => {
+      if (menuRef.current && !menuRef.current.contains(e.target)) {
+        setShowAccountMenu(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    document.addEventListener("touchstart", handleClickOutside);
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+      document.removeEventListener("touchstart", handleClickOutside);
+    };
+  }, [showAccountMenu]);
 
   const activeAccount = accounts.find(a => a.id === activeAccountId);
   const token = activeAccount?.pat || session?.accessToken || "";
@@ -934,7 +951,7 @@ export default function ZipPusherPage() {
         </div>
 
         {/* Right: Avatar Dropdown */}
-        <div style={{ position: "relative" }}>
+        <div ref={menuRef} style={{ position: "relative" }}>
           <button
             onClick={() => setShowAccountMenu(p => !p)}
             style={{ background: "none", border: "none", cursor: "pointer", padding: 0, display: "flex", alignItems: "center", gap: "8px" }}
@@ -956,30 +973,65 @@ export default function ZipPusherPage() {
             <span style={{ color: "#6e7681", fontSize: "10px" }}>▾</span>
           </button>
 
-          {/* Compact icon bar: + ⇄ ✕ */}
+          {/* Google-style Account Card */}
           {showAccountMenu && (
-            <div style={{ position: "fixed", top: "56px", right: "12px", display: "flex", gap: "6px", zIndex: 100, background: "#161b22", border: "1px solid #30363d", borderRadius: "10px", padding: "6px", boxShadow: "0 8px 24px rgba(0,0,0,0.5)" }}>
-              <button onClick={() => { setShowAddModal(true); setShowAccountMenu(false); }}
-                title="Add account"
-                style={{ width: "36px", height: "36px", borderRadius: "8px", background: "#21262d", border: "none", color: "#c9d1d9", fontSize: "16px", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                ＋
-              </button>
-              <button onClick={() => { setShowSwitchModal(true); setShowAccountMenu(false); }}
-                title="Switch account"
-                style={{ width: "36px", height: "36px", borderRadius: "8px", background: "#21262d", border: "none", color: "#c9d1d9", fontSize: "15px", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                ⇄
-              </button>
-              <button onClick={() => setShowAccountMenu(false)}
-                title="Close"
-                style={{ width: "36px", height: "36px", borderRadius: "8px", background: "#21262d", border: "none", color: "#8b949e", fontSize: "15px", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                ✕
-              </button>
+            <div style={{ position: "fixed", top: "56px", right: "12px", width: "280px", background: "#161b22", border: "1px solid #30363d", borderRadius: "14px", zIndex: 100, boxShadow: "0 12px 32px rgba(0,0,0,0.6)", overflow: "hidden" }}>
+
+              {/* Current account detail */}
+              <div style={{ padding: "20px 16px", display: "flex", flexDirection: "column", alignItems: "center", gap: "8px", borderBottom: "1px solid #21262d" }}>
+                <div style={{ width: "56px", height: "56px", borderRadius: "50%", overflow: "hidden", border: "2px solid #2ea043", background: "#30363d" }}>
+                  {activeAccount?.avatar
+                    ? <img src={activeAccount.avatar} alt="" style={{ width: "100%", height: "100%" }} />
+                    : <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "24px" }}>👤</div>
+                  }
+                </div>
+                <div style={{ textAlign: "center" }}>
+                  <div style={{ fontSize: "14px", fontWeight: 700, color: "#f0f6fc" }}>
+                    {activeAccount ? activeAccount.label : (session?.user?.name || "No account")}
+                  </div>
+                  <div style={{ fontSize: "11px", color: "#6e7681", marginTop: "2px" }}>
+                    {activeAccount ? `@${activeAccount.login}` : (session?.user?.email || "")}
+                  </div>
+                </div>
+              </div>
+
+              {/* Actions */}
+              <div style={{ padding: "6px" }}>
+                <button
+                  onClick={() => { setShowSwitchModal(true); setShowAccountMenu(false); }}
+                  style={{ width: "100%", background: "none", border: "none", cursor: "pointer", padding: "11px 12px", display: "flex", alignItems: "center", gap: "12px", fontFamily: "inherit", borderRadius: "8px" }}
+                  onMouseDown={e => e.currentTarget.style.background = "#21262d"}
+                >
+                  <span style={{ fontSize: "16px", width: "20px", textAlign: "center" }}>⇄</span>
+                  <span style={{ fontSize: "13px", color: "#c9d1d9", fontWeight: 500 }}>Switch account</span>
+                  {accounts.length > 0 && (
+                    <span style={{ marginLeft: "auto", fontSize: "10px", background: "#21262d", color: "#8b949e", borderRadius: "10px", padding: "1px 7px" }}>{accounts.length}</span>
+                  )}
+                </button>
+
+                <button
+                  onClick={() => { setShowAddModal(true); setShowAccountMenu(false); }}
+                  style={{ width: "100%", background: "none", border: "none", cursor: "pointer", padding: "11px 12px", display: "flex", alignItems: "center", gap: "12px", fontFamily: "inherit", borderRadius: "8px" }}
+                >
+                  <span style={{ fontSize: "16px", width: "20px", textAlign: "center" }}>➕</span>
+                  <span style={{ fontSize: "13px", color: "#c9d1d9", fontWeight: 500 }}>Add account</span>
+                </button>
+              </div>
+
+              {/* Logout */}
+              <div style={{ borderTop: "1px solid #21262d", padding: "6px" }}>
+                <button
+                  onClick={() => { setShowAccountMenu(false); signOut({ callbackUrl: "/login" }); }}
+                  style={{ width: "100%", background: "none", border: "none", cursor: "pointer", padding: "11px 12px", display: "flex", alignItems: "center", gap: "12px", fontFamily: "inherit", borderRadius: "8px" }}
+                >
+                  <span style={{ fontSize: "16px", width: "20px", textAlign: "center" }}>🚪</span>
+                  <span style={{ fontSize: "13px", color: "#f85149", fontWeight: 500 }}>Logout</span>
+                </button>
+              </div>
             </div>
           )}
-
-          {/* Backdrop */}
-          {showAccountMenu && <div onClick={() => setShowAccountMenu(false)} style={{ position: "fixed", inset: 0, zIndex: 99 }} />}
         </div>
+        {/* end avatar wrapper */}
       </div>
 
       {/* Content */}
