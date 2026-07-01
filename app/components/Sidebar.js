@@ -610,7 +610,117 @@ function VercelEnvPanel({ open, activeAccountId }) {
   );
 }
 
-export default function Sidebar({ open, onClose, activeAccountId }) {
+function ForkRepoPanel({ token }) {
+  const [input, setInput]       = useState("");
+  const [forking, setForking]   = useState(false);
+  const [result, setResult]     = useState(null); // {ok, msg, url}
+
+  const parseRepo = (val) => {
+    val = val.trim();
+    // Accept: "owner/repo" or "https://github.com/owner/repo"
+    const urlMatch = val.match(/github\.com\/([^/]+\/[^/]+)/);
+    if (urlMatch) return urlMatch[1].replace(/\.git$/, "");
+    if (/^[^/]+\/[^/]+$/.test(val)) return val;
+    return null;
+  };
+
+  const handleFork = async () => {
+    const repoPath = parseRepo(input);
+    if (!repoPath) { setResult({ ok: false, msg: "❌ Sahi format daalo: owner/repo ya GitHub URL" }); return; }
+    const [owner, repo] = repoPath.split("/");
+    setForking(true); setResult(null);
+    try {
+      const res = await fetch(`https://api.github.com/repos/${owner}/${repo}/forks`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json" },
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.message || "Fork nahi ho saka");
+      setResult({ ok: true, msg: `✅ Fork ho gaya!`, url: data.html_url, name: data.full_name });
+      setInput("");
+    } catch (e) {
+      setResult({ ok: false, msg: `❌ ${e.message}` });
+    } finally {
+      setForking(false);
+    }
+  };
+
+  const inp = { width: "100%", boxSizing: "border-box", background: "#0d1117", border: "1px solid #30363d", color: "#c9d1d9", borderRadius: "6px", padding: "8px 10px", fontSize: "11.5px", outline: "none", fontFamily: "inherit" };
+
+  return (
+    <div style={{ padding: "16px", display: "flex", flexDirection: "column", gap: "12px" }}>
+      <div style={{ fontSize: "11.5px", color: "#8b949e", lineHeight: 1.6 }}>
+        Kisi bhi public repo ko apne GitHub account mein fork karo — seedha yahin se, GitHub.com pe jaane ki zaroorat nahi.
+      </div>
+      <div>
+        <div style={{ fontSize: "11px", color: "#8b949e", marginBottom: "5px" }}>🔗 Repo URL ya <code style={{ color: "#c9d1d9" }}>owner/repo</code></div>
+        <input
+          type="text"
+          value={input}
+          onChange={e => { setInput(e.target.value); setResult(null); }}
+          onKeyDown={e => e.key === "Enter" && !forking && input.trim() && handleFork()}
+          placeholder="e.g. vercel/next.js"
+          style={inp}
+        />
+      </div>
+
+      <button
+        onClick={handleFork}
+        disabled={forking || !input.trim() || !token}
+        style={{
+          padding: "10px", borderRadius: "6px", fontSize: "12px", fontFamily: "inherit",
+          fontWeight: 700, cursor: forking || !input.trim() || !token ? "not-allowed" : "pointer",
+          background: forking || !input.trim() || !token ? "#161b22" : "#238636",
+          color: forking || !input.trim() || !token ? "#6e7681" : "#fff",
+          border: "1px solid #2ea043",
+        }}
+      >
+        {forking ? "⏳ Fork ho raha hai…" : "🍴 Fork Karo"}
+      </button>
+
+      {!token && (
+        <div style={{ fontSize: "10.5px", color: "#e3b341", textAlign: "center" }}>
+          ⚠️ Pehle Accounts tab mein GitHub account add karo
+        </div>
+      )}
+
+      {result && (
+        <div style={{
+          background: result.ok ? "#0d1f0d" : "#1f0d0d",
+          border: `1px solid ${result.ok ? "#2ea04344" : "#da363344"}`,
+          borderRadius: "8px", padding: "12px",
+          display: "flex", flexDirection: "column", gap: "8px",
+        }}>
+          <div style={{ fontSize: "12px", color: result.ok ? "#3fb950" : "#f85149" }}>{result.msg}</div>
+          {result.ok && result.url && (
+            <>
+              <code style={{ fontSize: "11px", color: "#8b949e" }}>{result.name}</code>
+              <a
+                href={result.url} target="_blank" rel="noreferrer"
+                style={{ fontSize: "11px", color: "#58a6ff", textDecoration: "none", display: "flex", alignItems: "center", gap: "4px" }}
+              >
+                GitHub par dekho ↗
+              </a>
+            </>
+          )}
+        </div>
+      )}
+
+      <div style={{ fontSize: "10px", color: "#484f58", textAlign: "center" }}>
+        Fork hone ke baad repo teri list mein automatically aa jayega
+      </div>
+    </div>
+  );
+}
+
+const SIDEBAR_TABS = [
+  { id: "vercel", label: "⚡ Vercel" },
+  { id: "fork",   label: "🍴 Fork Repo" },
+];
+
+export default function Sidebar({ open, onClose, activeAccountId, token }) {
+  const [sidebarTab, setSidebarTab] = useState("vercel");
+
   return (
     <>
       {/* Backdrop */}
@@ -631,16 +741,34 @@ export default function Sidebar({ open, onClose, activeAccountId }) {
           transition: "transform 0.22s ease", display: "flex", flexDirection: "column",
         }}
       >
+        {/* Header */}
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 16px", borderBottom: "1px solid #21262d", flexShrink: 0 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-            <span style={{ fontSize: "16px" }}>▲</span>
-            <span style={{ fontSize: "13px", fontWeight: 700, color: "#f0f6fc" }}>Vercel Env Variables</span>
-          </div>
+          <span style={{ fontSize: "13px", fontWeight: 700, color: "#f0f6fc" }}>⚙️ Tools</span>
           <button onClick={onClose} style={{ background: "none", border: "none", color: "#6e7681", fontSize: "18px", cursor: "pointer" }}>✕</button>
         </div>
 
+        {/* Tabs */}
+        <div style={{ display: "flex", padding: "8px 10px", gap: "6px", borderBottom: "1px solid #21262d", flexShrink: 0 }}>
+          {SIDEBAR_TABS.map(t => (
+            <button
+              key={t.id}
+              onClick={() => setSidebarTab(t.id)}
+              style={{
+                flex: 1, padding: "7px 4px", borderRadius: "6px", fontSize: "11px",
+                fontFamily: "inherit", fontWeight: 700, cursor: "pointer", border: "none",
+                background: sidebarTab === t.id ? "#1f6feb" : "#0d1117",
+                color: sidebarTab === t.id ? "#fff" : "#8b949e",
+              }}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+
+        {/* Panel */}
         <div style={{ overflowY: "auto", flex: 1 }}>
-          <VercelEnvPanel open={open} activeAccountId={activeAccountId} />
+          {sidebarTab === "vercel" && <VercelEnvPanel open={open} activeAccountId={activeAccountId} />}
+          {sidebarTab === "fork"   && <ForkRepoPanel token={token} />}
         </div>
       </div>
     </>

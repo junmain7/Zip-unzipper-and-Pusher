@@ -162,7 +162,7 @@ export default function ZipPusherPage() {
       <BottomNav tabs={tabs} activeTab={activeTab} setActiveTab={setActiveTab} />
 
       {/* Left Sidebar drawer — Vercel env variables */}
-      <Sidebar open={sidebarOpen} onClose={() => setSidebarOpen(false)} activeAccountId={activeAccountId} />
+      <Sidebar open={sidebarOpen} onClose={() => setSidebarOpen(false)} activeAccountId={activeAccountId} token={token} />
 
       {/* Add Account Modal */}
       {showAddModal && (
