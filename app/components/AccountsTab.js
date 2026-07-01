@@ -35,6 +35,7 @@ function ExpiryBadge({ expiresAt }) {
 export default function AccountsTab({ activeAccountId, setActiveAccountId, accounts, setAccounts }) {
   const [showAdd, setShowAdd] = useState(false);
   const [showInvite, setShowInvite] = useState(false);
+  const [showAgent, setShowAgent] = useState(false);
   const [label, setLabel] = useState("");
   const [pat, setPat] = useState("");
   const [patVisible, setPatVisible] = useState(false);
@@ -164,6 +165,14 @@ export default function AccountsTab({ activeAccountId, setActiveAccountId, accou
       </button>
 
       {showInvite && <InviteLinkModal onClose={() => setShowInvite(false)} />}
+
+      {accounts.length > 0 && (
+        <button onClick={() => setShowAgent(true)} style={{ width: "100%", padding: "12px", borderRadius: "8px", fontSize: "13px", fontWeight: 600, cursor: "pointer", fontFamily: "inherit", background: "#161b22", color: "#ffa657", border: "1px dashed #cc8b3f" }}>
+          🤖 Agent Access Link Banao (repo read karwao)
+        </button>
+      )}
+
+      {showAgent && <AgentLinkModal accounts={accounts} onClose={() => setShowAgent(false)} />}
 
       <div style={{ fontSize: "10px", color: "#484f58", textAlign: "center" }}>PAT localStorage mein save hota hai · Scope chahiye: <code>repo</code></div>
     </div>
@@ -547,7 +556,141 @@ export function InviteLinkModal({ onClose }) {
   );
 }
 
-// ── Skeleton Loader (Firestore se accounts fetch hone tak) ────
+// ── Agent Link Modal ──────────────────────────────────────
+// Account + repo chuno, ek read-only URL milta hai jo poora repo (tree +
+// file contents) JSON mein return karta hai — kisi bhi AI/agent tool ko
+// bas yeh URL fetch karna hai, poora code padh lega.
+export function AgentLinkModal({ accounts, onClose }) {
+  const [step, setStep] = useState("account"); // account | repo | done
+  const [selectedAcc, setSelectedAcc] = useState(null);
+  const [repos, setRepos] = useState([]);
+  const [reposLoading, setReposLoading] = useState(false);
+  const [repoFilter, setRepoFilter] = useState("");
+  const [generating, setGenerating] = useState(false);
+  const [link, setLink] = useState(null);
+  const [existingLinks, setExistingLinks] = useState([]);
+  const [copied, setCopied] = useState(false);
+  const [error, setError] = useState("");
+
+  const origin = typeof window !== "undefined" ? window.location.origin : "";
+
+  useEffect(() => {
+    fetch("/api/agent").then(r => r.json()).then(d => setExistingLinks(d.links || [])).catch(() => {});
+  }, []);
+
+  const pickAccount = async (acc) => {
+    setSelectedAcc(acc); setStep("repo"); setReposLoading(true); setError("");
+    try {
+      const res = await fetch("https://api.github.com/user/repos?per_page=100&sort=updated", {
+        headers: { Authorization: `token ${acc.pat}`, Accept: "application/vnd.github.v3+json" },
+      });
+      if (!res.ok) throw new Error();
+      setRepos(await res.json());
+    } catch { setError("Repos load nahi hue"); }
+    finally { setReposLoading(false); }
+  };
+
+  const pickRepo = async (repo) => {
+    setGenerating(true); setError("");
+    try {
+      const res = await fetch("/api/agent", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ accountId: selectedAcc.id, owner: repo.owner.login, repo: repo.name }),
+      });
+      if (!res.ok) throw new Error();
+      const data = await res.json();
+      setLink(data.link);
+      setStep("done");
+    } catch { setError("Link generate nahi hua"); }
+    finally { setGenerating(false); }
+  };
+
+  const handleRevoke = async (token) => {
+    await fetch("/api/agent", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token }) }).catch(() => {});
+    setExistingLinks(l => l.filter(x => x.token !== token));
+  };
+
+  const handleCopy = async (url) => {
+    try { await navigator.clipboard.writeText(url); setCopied(true); setTimeout(() => setCopied(false), 1500); } catch {}
+  };
+
+  const filteredRepos = repos.filter(r => r.name.toLowerCase().includes(repoFilter.toLowerCase()));
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center", padding: "16px" }} onClick={onClose}>
+      <div onClick={e => e.stopPropagation()} style={{ background: "#161b22", border: "1px solid #30363d", borderRadius: "12px", width: "100%", maxWidth: "380px", maxHeight: "82vh", overflowY: "auto", padding: "18px", display: "flex", flexDirection: "column", gap: "12px" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div style={{ fontSize: "14px", fontWeight: 700, color: "#f0f6fc" }}>🤖 Agent Access Link</div>
+          <button onClick={onClose} style={{ background: "none", border: "none", color: "#6e7681", fontSize: "18px", cursor: "pointer" }}>✕</button>
+        </div>
+
+        {step === "account" && (
+          <>
+            <div style={{ fontSize: "11px", color: "#8b949e" }}>Kis account ka repo access dena hai?</div>
+            {accounts.map(acc => (
+              <button key={acc.id} onClick={() => pickAccount(acc)} style={{ display: "flex", alignItems: "center", gap: "10px", padding: "10px", background: "#0d1117", border: "1px solid #30363d", borderRadius: "8px", cursor: "pointer", fontFamily: "inherit", textAlign: "left" }}>
+                <div style={{ width: "28px", height: "28px", borderRadius: "50%", overflow: "hidden", background: "#30363d", flexShrink: 0 }}>{acc.avatar && <img src={acc.avatar} alt="" style={{ width: "100%", height: "100%" }} />}</div>
+                <div style={{ fontSize: "12px", color: "#f0f6fc", fontWeight: 600 }}>{acc.label} <span style={{ color: "#6e7681", fontWeight: 400 }}>@{acc.login}</span></div>
+              </button>
+            ))}
+          </>
+        )}
+
+        {step === "repo" && (
+          <>
+            <div style={{ fontSize: "11px", color: "#8b949e" }}>Kaunsa repo? — <strong style={{ color: "#f0f6fc" }}>{selectedAcc?.label}</strong></div>
+            <input value={repoFilter} onChange={e => setRepoFilter(e.target.value)} placeholder="🔍 Repo search karo" style={{ background: "#0d1117", border: "1px solid #30363d", color: "#c9d1d9", borderRadius: "6px", padding: "9px 12px", fontSize: "12px", outline: "none", fontFamily: "inherit" }} />
+            {reposLoading ? (
+              <div style={{ fontSize: "12px", color: "#6e7681", textAlign: "center", padding: "16px" }}>Loading…</div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: "6px", maxHeight: "260px", overflowY: "auto" }}>
+                {filteredRepos.map(r => (
+                  <button key={r.id} onClick={() => pickRepo(r)} disabled={generating} style={{ textAlign: "left", padding: "9px 10px", background: "#0d1117", border: "1px solid #30363d", borderRadius: "6px", color: "#c9d1d9", fontSize: "12px", cursor: generating ? "not-allowed" : "pointer", fontFamily: "inherit" }}>
+                    {r.private ? "🔒" : "📂"} {r.name}
+                  </button>
+                ))}
+              </div>
+            )}
+            <button onClick={() => setStep("account")} style={{ background: "none", border: "none", color: "#6e7681", fontSize: "11px", cursor: "pointer", fontFamily: "inherit" }}>← Back</button>
+          </>
+        )}
+
+        {step === "done" && link && (
+          <>
+            <div style={{ fontSize: "11px", color: "#8b949e" }}>Yeh URL do — GET request pe pura repo (code + files) JSON mein milega:</div>
+            <div style={{ background: "#0d1117", border: "1px solid #30363d", borderRadius: "6px", padding: "9px 12px", fontSize: "11px", color: "#58a6ff", wordBreak: "break-all" }}>
+              {origin}/api/agent/{link.token}
+            </div>
+            <button onClick={() => handleCopy(`${origin}/api/agent/${link.token}`)} style={{ padding: "9px", borderRadius: "6px", fontSize: "12px", fontFamily: "inherit", fontWeight: 600, cursor: "pointer", background: copied ? "#0d1f0d" : "#1f6feb", color: "#fff", border: "1px solid #388bfd" }}>
+              {copied ? "✅ Copied" : "📋 Copy Link"}
+            </button>
+            <div style={{ fontSize: "10px", color: "#484f58" }}>Repo: {link.owner}/{link.repo} · Read-only · Revoke kabhi bhi ho sakta hai</div>
+          </>
+        )}
+
+        {error && <div style={{ fontSize: "11px", color: "#f85149", textAlign: "center" }}>❌ {error}</div>}
+
+        {existingLinks.length > 0 && step === "account" && (
+          <>
+            <div style={{ borderTop: "1px solid #21262d", paddingTop: "10px", fontSize: "11px", color: "#8b949e" }}>Active Agent Links:</div>
+            {existingLinks.map(l => (
+              <div key={l.token} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px", padding: "8px 10px", background: "#0d1117", border: "1px solid #30363d", borderRadius: "6px" }}>
+                <div style={{ fontSize: "11px", color: "#c9d1d9", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" }}>{l.owner}/{l.repo} <span style={{ color: "#6e7681" }}>({l.accountLabel})</span></div>
+                <div style={{ display: "flex", gap: "6px", flexShrink: 0 }}>
+                  <button onClick={() => handleCopy(`${origin}/api/agent/${l.token}`)} style={{ background: "#21262d", border: "1px solid #30363d", color: "#58a6ff", borderRadius: "4px", padding: "4px 6px", fontSize: "10px", cursor: "pointer", fontFamily: "inherit" }}>📋</button>
+                  <button onClick={() => handleRevoke(l.token)} style={{ background: "none", border: "1px solid #30363d", color: "#f85149", borderRadius: "4px", padding: "4px 6px", fontSize: "10px", cursor: "pointer", fontFamily: "inherit" }}>🗑️</button>
+                </div>
+              </div>
+            ))}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+
 export function AccountsSkeleton() {
   const shimmer = {
     background: "linear-gradient(90deg, #161b22 25%, #21262d 37%, #161b22 63%)",
