@@ -5,6 +5,7 @@ import { saveAccounts, saveActiveId, maskPat } from "../../lib/storage";
 
 export default function AccountsTab({ activeAccountId, setActiveAccountId, accounts, setAccounts }) {
   const [showAdd, setShowAdd] = useState(false);
+  const [showInvite, setShowInvite] = useState(false);
   const [label, setLabel] = useState("");
   const [pat, setPat] = useState("");
   const [patVisible, setPatVisible] = useState(false);
@@ -64,6 +65,7 @@ export default function AccountsTab({ activeAccountId, setActiveAccountId, accou
               <div style={{ fontSize: "13px", fontWeight: 700, color: "#f0f6fc", display: "flex", alignItems: "center", gap: "6px" }}>
                 {acc.label}
                 {isActive && <span style={{ fontSize: "9px", background: "#238636", color: "#fff", borderRadius: "4px", padding: "1px 5px" }}>ACTIVE</span>}
+                {acc.viaInvite && <span style={{ fontSize: "9px", background: "#1f6feb", color: "#fff", borderRadius: "4px", padding: "1px 5px" }}>via invite</span>}
               </div>
               <div style={{ fontSize: "10px", color: "#6e7681" }}>@{acc.login} · {maskPat(acc.pat)}</div>
             </div>
@@ -125,6 +127,13 @@ export default function AccountsTab({ activeAccountId, setActiveAccountId, accou
           ➕ Account Add Karo
         </button>
       )}
+
+      <button onClick={() => setShowInvite(true)} style={{ width: "100%", padding: "12px", borderRadius: "8px", fontSize: "13px", fontWeight: 600, cursor: "pointer", fontFamily: "inherit", background: "#161b22", color: "#a5a5f5", border: "1px dashed #6e7cc4" }}>
+        🔗 Invite Link Banao (kisi aur ka account add karwao)
+      </button>
+
+      {showInvite && <InviteLinkModal onClose={() => setShowInvite(false)} />}
+
       <div style={{ fontSize: "10px", color: "#484f58", textAlign: "center" }}>PAT localStorage mein save hota hai · Scope chahiye: <code>repo</code></div>
     </div>
   );
@@ -325,7 +334,10 @@ export function SwitchAccountModal({ onClose, accounts, setAccounts, activeAccou
                   onClick={() => { saveActiveId(acc.id); setActiveAccountId(acc.id); setSelectedRepo(""); onClose(); }}
                   style={{ flex: 1, textAlign: "left", background: "none", border: "none", cursor: "pointer", fontFamily: "inherit", padding: 0 }}
                 >
-                  <div style={{ fontSize: "13px", fontWeight: 600, color: "#f0f6fc" }}>{acc.label}</div>
+                  <div style={{ fontSize: "13px", fontWeight: 600, color: "#f0f6fc", display: "flex", alignItems: "center", gap: "6px" }}>
+                    {acc.label}
+                    {acc.viaInvite && <span style={{ fontSize: "8px", background: "#1f6feb", color: "#fff", borderRadius: "4px", padding: "1px 4px" }}>via invite</span>}
+                  </div>
                   <div style={{ fontSize: "10px", color: "#6e7681" }}>@{acc.login}</div>
                 </button>
                 {isActive && <span style={{ color: "#3fb950", fontSize: "14px", flexShrink: 0 }}>✓</span>}
@@ -345,6 +357,156 @@ export function SwitchAccountModal({ onClose, accounts, setAccounts, activeAccou
         <button onClick={() => { onClose(); onAddNew(); }} style={{ padding: "13px 16px", background: "none", border: "none", borderTop: "1px solid #21262d", color: "#58a6ff", fontSize: "13px", fontWeight: 600, cursor: "pointer", fontFamily: "inherit", display: "flex", alignItems: "center", gap: "8px", flexShrink: 0 }}>
           ➕ Add another account
         </button>
+      </div>
+    </div>
+  );
+}
+
+// ── Invite Link Modal ─────────────────────────────────────
+// Owner ek link generate karta hai, kisiko bhejta hai, woh apna GitHub
+// connect karta hai — aur woh account automatically owner ke accounts
+// list mein "via invite" badge ke saath aa jaata hai.
+export function InviteLinkModal({ onClose }) {
+  const [loading, setLoading] = useState(true);
+  const [invite, setInvite] = useState(null);
+  const [generating, setGenerating] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [error, setError] = useState("");
+  const [duration, setDuration] = useState("7d");
+
+  const origin = typeof window !== "undefined" ? window.location.origin : "";
+  const link = invite ? `${origin}/invite/${invite.token}` : "";
+
+  const DURATION_OPTIONS = [
+    { value: "1d", label: "1 Din" },
+    { value: "7d", label: "7 Din" },
+    { value: "30d", label: "30 Din" },
+    { value: "permanent", label: "Permanent" },
+  ];
+
+  const loadInvite = async () => {
+    setLoading(true); setError("");
+    try {
+      const res = await fetch("/api/invite");
+      const data = await res.json();
+      setInvite(data.invite || null);
+    } catch { setError("Load nahi ho paya"); }
+    finally { setLoading(false); }
+  };
+
+  useEffect(() => { loadInvite(); }, []);
+
+  const handleGenerate = async () => {
+    setGenerating(true); setError("");
+    try {
+      const res = await fetch("/api/invite", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ duration }),
+      });
+      if (!res.ok) throw new Error();
+      const data = await res.json();
+      setInvite(data.invite);
+      setCopied(false);
+    } catch { setError("Generate nahi ho paya, dobara try karo"); }
+    finally { setGenerating(false); }
+  };
+
+  const handleRevoke = async () => {
+    setGenerating(true); setError("");
+    try {
+      await fetch("/api/invite", { method: "DELETE" });
+      setInvite(null);
+    } catch { setError("Revoke nahi ho paya"); }
+    finally { setGenerating(false); }
+  };
+
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(link);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {}
+  };
+
+  const handleShare = async () => {
+    if (navigator.share) {
+      try { await navigator.share({ title: "GitHub Account Connect Karo", url: link }); } catch {}
+    } else {
+      handleCopy();
+    }
+  };
+
+  const expiryText = invite
+    ? (invite.expiresAt === null
+        ? "Kabhi expire nahi hoga (ek baar use hote hi khatam)"
+        : new Date(invite.expiresAt).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" }))
+    : "";
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center", padding: "16px" }} onClick={onClose}>
+      <div onClick={e => e.stopPropagation()} style={{ background: "#161b22", border: "1px solid #30363d", borderRadius: "12px", padding: "18px", width: "100%", maxWidth: "380px", display: "flex", flexDirection: "column", gap: "12px" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div style={{ fontSize: "14px", fontWeight: 700, color: "#f0f6fc" }}>🔗 Invite Link</div>
+          <button onClick={onClose} style={{ background: "none", border: "none", color: "#6e7681", fontSize: "18px", cursor: "pointer" }}>✕</button>
+        </div>
+        <div style={{ fontSize: "11px", color: "#8b949e", lineHeight: 1.5 }}>
+          Yeh link kisiko bhejo — woh apna GitHub connect karega aur uska account automatically tumhare accounts list mein add ho jaayega. Link <strong style={{ color: "#f0f6fc" }}>ek baar use</strong> hote hi khud invalid ho jaayega.
+        </div>
+
+        {loading ? (
+          <div style={{ fontSize: "12px", color: "#6e7681", textAlign: "center", padding: "16px" }}>Loading…</div>
+        ) : invite ? (
+          <>
+            <div style={{ background: "#0d1117", border: "1px solid #30363d", borderRadius: "6px", padding: "9px 12px", fontSize: "11px", color: "#58a6ff", wordBreak: "break-all" }}>
+              {link}
+            </div>
+            <div style={{ fontSize: "10px", color: "#484f58" }}>Expires: {expiryText}</div>
+            <div style={{ display: "flex", gap: "8px" }}>
+              <button onClick={handleCopy} style={{ flex: 1, padding: "9px", borderRadius: "6px", fontSize: "12px", fontFamily: "inherit", fontWeight: 600, cursor: "pointer", background: copied ? "#0d1f0d" : "#1f6feb", color: "#fff", border: "1px solid #388bfd" }}>
+                {copied ? "✅ Copied" : "📋 Copy"}
+              </button>
+              <button onClick={handleShare} style={{ flex: 1, padding: "9px", borderRadius: "6px", fontSize: "12px", fontFamily: "inherit", fontWeight: 600, cursor: "pointer", background: "#238636", color: "#fff", border: "1px solid #2ea043" }}>
+                📤 Share
+              </button>
+            </div>
+            <button onClick={handleRevoke} disabled={generating} style={{ background: "none", border: "1px solid #30363d", color: "#f85149", borderRadius: "6px", padding: "8px", fontSize: "11px", cursor: generating ? "not-allowed" : "pointer", fontFamily: "inherit" }}>
+              {generating ? "⏳…" : "🗑️ Revoke & Naya Banao"}
+            </button>
+          </>
+        ) : (
+          <>
+            <div>
+              <div style={{ fontSize: "11px", color: "#8b949e", marginBottom: "6px" }}>⏱️ Link kitne samay tak valid rahe?</div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px" }}>
+                {DURATION_OPTIONS.map(opt => (
+                  <button
+                    key={opt.value}
+                    onClick={() => setDuration(opt.value)}
+                    style={{
+                      padding: "9px",
+                      borderRadius: "6px",
+                      fontSize: "12px",
+                      fontFamily: "inherit",
+                      fontWeight: 600,
+                      cursor: "pointer",
+                      background: duration === opt.value ? "#1f6feb" : "#0d1117",
+                      color: duration === opt.value ? "#fff" : "#8b949e",
+                      border: `1px solid ${duration === opt.value ? "#388bfd" : "#30363d"}`,
+                    }}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <button onClick={handleGenerate} disabled={generating} style={{ width: "100%", padding: "11px", borderRadius: "8px", fontSize: "13px", fontWeight: 700, cursor: generating ? "not-allowed" : "pointer", fontFamily: "inherit", background: generating ? "#0d1117" : "#238636", color: generating ? "#6e7681" : "#fff", border: "1px solid #2ea043" }}>
+              {generating ? "⏳ Generating…" : "🔗 Invite Link Generate Karo"}
+            </button>
+          </>
+        )}
+        {error && <div style={{ fontSize: "11px", color: "#f85149", textAlign: "center" }}>❌ {error}</div>}
+        <div style={{ fontSize: "10px", color: "#484f58", textAlign: "center" }}>One-time use · connect hote hi link khud unlink ho jaayega</div>
       </div>
     </div>
   );
