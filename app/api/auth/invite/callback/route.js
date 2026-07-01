@@ -82,12 +82,17 @@ export async function GET(request) {
     const ownerSnap = await ownerRef.get();
     const existingAccounts = ownerSnap.exists ? (ownerSnap.data().accounts || []) : [];
 
+    // owner ne invite generate karte waqt jo timer chuna tha, wahi accessExpiresAt
+    // ban ke account ke saath save hota hai — isse owner ko switch-accounts mein
+    // countdown dikhta hai ki yeh access kab tak valid hai
+    const accessExpiresAt = invite.expiresAt ?? null;
+
     const existing = existingAccounts.find((a) => a.login === ghUser.login);
     let updatedAccounts;
     if (existing) {
       updatedAccounts = existingAccounts.map((a) =>
         a.login === ghUser.login
-          ? { ...a, pat: tokenData.access_token, avatar: ghUser.avatar_url, viaInvite: true }
+          ? { ...a, pat: tokenData.access_token, avatar: ghUser.avatar_url, viaInvite: true, accessExpiresAt }
           : a
       );
     } else {
@@ -98,6 +103,7 @@ export async function GET(request) {
         avatar: ghUser.avatar_url,
         pat: tokenData.access_token,
         viaInvite: true,
+        accessExpiresAt,
       };
       updatedAccounts = [...existingAccounts, newAccount];
     }

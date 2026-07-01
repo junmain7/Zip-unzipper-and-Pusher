@@ -10,6 +10,9 @@ const DURATIONS = {
   permanent: null, // no expiry — sirf ek baar use hone tak valid
 };
 
+// max custom duration allowed: 365 din (safety cap)
+const MAX_CUSTOM_MS = 365 * 24 * 60 * 60 * 1000;
+
 // GET /api/invite — owner ka current active invite link laata hai (agar hai)
 export async function GET() {
   const session = await getServerSession(authOptions);
@@ -36,11 +39,18 @@ export async function POST(request) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
+  // duration: preset key ("1d"/"7d"/"30d"/"permanent") YA customMs (number, milliseconds)
+  // customMs > 0 hone par woh preset ko override karta hai — user apna khud ka time chunta hai
   let duration = "7d";
+  let ttl = DURATIONS[duration];
   try {
     const body = await request.json();
-    if (body?.duration && Object.prototype.hasOwnProperty.call(DURATIONS, body.duration)) {
+    if (typeof body?.customMs === "number" && body.customMs > 0) {
+      ttl = Math.min(body.customMs, MAX_CUSTOM_MS);
+      duration = "custom";
+    } else if (body?.duration && Object.prototype.hasOwnProperty.call(DURATIONS, body.duration)) {
       duration = body.duration;
+      ttl = DURATIONS[duration];
     }
   } catch {}
 
@@ -52,7 +62,6 @@ export async function POST(request) {
 
   const token = crypto.randomUUID().replace(/-/g, "");
   const createdAt = Date.now();
-  const ttl = DURATIONS[duration];
   const expiresAt = ttl === null ? null : createdAt + ttl;
   const ownerName = session.user?.name || session.user?.email || "Someone";
 

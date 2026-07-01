@@ -3,6 +3,35 @@
 import { useState, useEffect, useRef } from "react";
 import { saveAccounts, saveActiveId, maskPat } from "../../lib/storage";
 
+// ── Expiry helpers (invite se aaye account ka access kitni der valid hai) ──
+function formatRemaining(ms) {
+  if (ms <= 0) return "Expired";
+  const mins = Math.floor(ms / 60000);
+  const days = Math.floor(mins / 1440);
+  const hrs = Math.floor((mins % 1440) / 60);
+  const m = mins % 60;
+  if (days > 0) return `${days}d ${hrs}h left`;
+  if (hrs > 0) return `${hrs}h ${m}m left`;
+  return `${m}m left`;
+}
+
+// Live-updating countdown badge — sirf viaInvite accounts jinke paas accessExpiresAt hai unpar dikhta hai
+function ExpiryBadge({ expiresAt }) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 30000);
+    return () => clearInterval(t);
+  }, []);
+  if (!expiresAt) return null;
+  const remaining = expiresAt - now;
+  const expired = remaining <= 0;
+  return (
+    <span style={{ fontSize: "9px", background: expired ? "#3d1f1f" : "#3d3319", color: expired ? "#f85149" : "#e3b341", borderRadius: "4px", padding: "1px 5px" }}>
+      ⏱ {formatRemaining(remaining)}
+    </span>
+  );
+}
+
 export default function AccountsTab({ activeAccountId, setActiveAccountId, accounts, setAccounts }) {
   const [showAdd, setShowAdd] = useState(false);
   const [showInvite, setShowInvite] = useState(false);
@@ -56,22 +85,24 @@ export default function AccountsTab({ activeAccountId, setActiveAccountId, accou
 
       {accounts.map(acc => {
         const isActive = acc.id === activeAccountId;
+        const expired = acc.viaInvite && acc.accessExpiresAt && acc.accessExpiresAt <= Date.now();
         return (
-          <div key={acc.id} style={{ background: "#161b22", border: `1px solid ${isActive ? "#2ea043" : "#30363d"}`, borderRadius: "8px", padding: "12px", display: "flex", alignItems: "center", gap: "10px" }}>
+          <div key={acc.id} style={{ background: "#161b22", border: `1px solid ${isActive ? "#2ea043" : "#30363d"}`, borderRadius: "8px", padding: "12px", display: "flex", alignItems: "center", gap: "10px", opacity: expired ? 0.55 : 1 }}>
             <div style={{ width: "36px", height: "36px", borderRadius: "50%", background: "#30363d", flexShrink: 0, overflow: "hidden", border: `2px solid ${isActive ? "#2ea043" : "#30363d"}` }}>
               {acc.avatar && <img src={acc.avatar} alt="" style={{ width: "100%", height: "100%" }} />}
             </div>
             <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontSize: "13px", fontWeight: 700, color: "#f0f6fc", display: "flex", alignItems: "center", gap: "6px" }}>
+              <div style={{ fontSize: "13px", fontWeight: 700, color: "#f0f6fc", display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
                 {acc.label}
                 {isActive && <span style={{ fontSize: "9px", background: "#238636", color: "#fff", borderRadius: "4px", padding: "1px 5px" }}>ACTIVE</span>}
                 {acc.viaInvite && <span style={{ fontSize: "9px", background: "#1f6feb", color: "#fff", borderRadius: "4px", padding: "1px 5px" }}>via invite</span>}
+                {acc.viaInvite && acc.accessExpiresAt && <ExpiryBadge expiresAt={acc.accessExpiresAt} />}
               </div>
               <div style={{ fontSize: "10px", color: "#6e7681" }}>@{acc.login} · {maskPat(acc.pat)}</div>
             </div>
             <div style={{ display: "flex", gap: "6px", flexShrink: 0 }}>
               {!isActive && (
-                <button onClick={() => { saveActiveId(acc.id); setActiveAccountId(acc.id); }} style={{ background: "#238636", border: "none", color: "#fff", borderRadius: "6px", padding: "5px 10px", fontSize: "11px", cursor: "pointer", fontFamily: "inherit", fontWeight: 600 }}>Switch</button>
+                <button onClick={() => { saveActiveId(acc.id); setActiveAccountId(acc.id); }} disabled={expired} style={{ background: expired ? "#21262d" : "#238636", border: "none", color: expired ? "#6e7681" : "#fff", borderRadius: "6px", padding: "5px 10px", fontSize: "11px", cursor: expired ? "not-allowed" : "pointer", fontFamily: "inherit", fontWeight: 600 }}>Switch</button>
               )}
               {deleteConfirm === acc.id ? (
                 <>
@@ -325,18 +356,21 @@ export function SwitchAccountModal({ onClose, accounts, setAccounts, activeAccou
           )}
           {accounts.map(acc => {
             const isActive = acc.id === activeAccountId;
+            const expired = acc.viaInvite && acc.accessExpiresAt && acc.accessExpiresAt <= Date.now();
             return (
-              <div key={acc.id} style={{ display: "flex", alignItems: "center", gap: "10px", padding: "10px 16px", borderBottom: "1px solid #21262d", background: isActive ? "#1f2937" : "transparent" }}>
+              <div key={acc.id} style={{ display: "flex", alignItems: "center", gap: "10px", padding: "10px 16px", borderBottom: "1px solid #21262d", background: isActive ? "#1f2937" : "transparent", opacity: expired ? 0.55 : 1 }}>
                 <div style={{ width: "32px", height: "32px", borderRadius: "50%", overflow: "hidden", flexShrink: 0, border: `2px solid ${isActive ? "#2ea043" : "#30363d"}`, background: "#30363d" }}>
                   {acc.avatar && <img src={acc.avatar} alt="" style={{ width: "100%", height: "100%" }} />}
                 </div>
                 <button
-                  onClick={() => { saveActiveId(acc.id); setActiveAccountId(acc.id); setSelectedRepo(""); onClose(); }}
-                  style={{ flex: 1, textAlign: "left", background: "none", border: "none", cursor: "pointer", fontFamily: "inherit", padding: 0 }}
+                  onClick={() => { if (expired) return; saveActiveId(acc.id); setActiveAccountId(acc.id); setSelectedRepo(""); onClose(); }}
+                  disabled={expired}
+                  style={{ flex: 1, textAlign: "left", background: "none", border: "none", cursor: expired ? "not-allowed" : "pointer", fontFamily: "inherit", padding: 0 }}
                 >
-                  <div style={{ fontSize: "13px", fontWeight: 600, color: "#f0f6fc", display: "flex", alignItems: "center", gap: "6px" }}>
+                  <div style={{ fontSize: "13px", fontWeight: 600, color: "#f0f6fc", display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
                     {acc.label}
                     {acc.viaInvite && <span style={{ fontSize: "8px", background: "#1f6feb", color: "#fff", borderRadius: "4px", padding: "1px 4px" }}>via invite</span>}
+                    {acc.viaInvite && acc.accessExpiresAt && <ExpiryBadge expiresAt={acc.accessExpiresAt} />}
                   </div>
                   <div style={{ fontSize: "10px", color: "#6e7681" }}>@{acc.login}</div>
                 </button>
@@ -372,17 +406,15 @@ export function InviteLinkModal({ onClose }) {
   const [generating, setGenerating] = useState(false);
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState("");
-  const [duration, setDuration] = useState("7d");
+  const [customValue, setCustomValue] = useState(7);
+  const [customUnit, setCustomUnit] = useState("days");
+  const [permanent, setPermanent] = useState(false);
 
   const origin = typeof window !== "undefined" ? window.location.origin : "";
   const link = invite ? `${origin}/invite/${invite.token}` : "";
 
-  const DURATION_OPTIONS = [
-    { value: "1d", label: "1 Din" },
-    { value: "7d", label: "7 Din" },
-    { value: "30d", label: "30 Din" },
-    { value: "permanent", label: "Permanent" },
-  ];
+  const UNIT_MS = { minutes: 60000, hours: 3600000, days: 86400000 };
+  const customMs = Math.max(1, Number(customValue) || 0) * UNIT_MS[customUnit];
 
   const loadInvite = async () => {
     setLoading(true); setError("");
@@ -402,7 +434,7 @@ export function InviteLinkModal({ onClose }) {
       const res = await fetch("/api/invite", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ duration }),
+        body: JSON.stringify(permanent ? { duration: "permanent" } : { customMs }),
       });
       if (!res.ok) throw new Error();
       const data = await res.json();
@@ -477,30 +509,33 @@ export function InviteLinkModal({ onClose }) {
         ) : (
           <>
             <div>
-              <div style={{ fontSize: "11px", color: "#8b949e", marginBottom: "6px" }}>⏱️ Link kitne samay tak valid rahe?</div>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px" }}>
-                {DURATION_OPTIONS.map(opt => (
-                  <button
-                    key={opt.value}
-                    onClick={() => setDuration(opt.value)}
-                    style={{
-                      padding: "9px",
-                      borderRadius: "6px",
-                      fontSize: "12px",
-                      fontFamily: "inherit",
-                      fontWeight: 600,
-                      cursor: "pointer",
-                      background: duration === opt.value ? "#1f6feb" : "#0d1117",
-                      color: duration === opt.value ? "#fff" : "#8b949e",
-                      border: `1px solid ${duration === opt.value ? "#388bfd" : "#30363d"}`,
-                    }}
-                  >
-                    {opt.label}
-                  </button>
-                ))}
+              <div style={{ fontSize: "11px", color: "#8b949e", marginBottom: "6px" }}>⏱️ Access kitne samay ke liye do? Apna time chuno:</div>
+              <div style={{ display: "flex", gap: "8px", opacity: permanent ? 0.4 : 1, pointerEvents: permanent ? "none" : "auto" }}>
+                <input
+                  type="number"
+                  min="1"
+                  value={customValue}
+                  onChange={e => setCustomValue(e.target.value)}
+                  style={{ width: "70px", background: "#0d1117", border: "1px solid #30363d", color: "#c9d1d9", borderRadius: "6px", padding: "9px 10px", fontSize: "13px", outline: "none", fontFamily: "inherit" }}
+                />
+                <div style={{ display: "flex", gap: "6px", flex: 1 }}>
+                  {[["minutes", "Min"], ["hours", "Ghante"], ["days", "Din"]].map(([val, label]) => (
+                    <button
+                      key={val}
+                      onClick={() => setCustomUnit(val)}
+                      style={{ flex: 1, padding: "9px 4px", borderRadius: "6px", fontSize: "11px", fontFamily: "inherit", fontWeight: 600, cursor: "pointer", background: customUnit === val ? "#1f6feb" : "#0d1117", color: customUnit === val ? "#fff" : "#8b949e", border: `1px solid ${customUnit === val ? "#388bfd" : "#30363d"}` }}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
               </div>
+              <label style={{ display: "flex", alignItems: "center", gap: "6px", marginTop: "10px", fontSize: "11px", color: "#8b949e", cursor: "pointer" }}>
+                <input type="checkbox" checked={permanent} onChange={e => setPermanent(e.target.checked)} />
+                Permanent (kabhi expire nahi hoga, sirf one-time use tak)
+              </label>
             </div>
-            <button onClick={handleGenerate} disabled={generating} style={{ width: "100%", padding: "11px", borderRadius: "8px", fontSize: "13px", fontWeight: 700, cursor: generating ? "not-allowed" : "pointer", fontFamily: "inherit", background: generating ? "#0d1117" : "#238636", color: generating ? "#6e7681" : "#fff", border: "1px solid #2ea043" }}>
+            <button onClick={handleGenerate} disabled={generating || (!permanent && (!customValue || Number(customValue) <= 0))} style={{ width: "100%", padding: "11px", borderRadius: "8px", fontSize: "13px", fontWeight: 700, cursor: generating ? "not-allowed" : "pointer", fontFamily: "inherit", background: generating ? "#0d1117" : "#238636", color: generating ? "#6e7681" : "#fff", border: "1px solid #2ea043" }}>
               {generating ? "⏳ Generating…" : "🔗 Invite Link Generate Karo"}
             </button>
           </>
