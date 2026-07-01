@@ -112,7 +112,7 @@ function RepoList({ token, onSelectRepo }) {
 
 // ─── Directory Contents ───────────────────────────────────────────────────────
 
-function DirView({ token, repo, path, onNavigate, onOpenFile, activeFilePath }) {
+function DirView({ token, repo, path, onNavigate, onOpenFile, activeFilePath, refreshKey }) {
   const [items, setItems]     = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError]     = useState("");
@@ -131,7 +131,7 @@ function DirView({ token, repo, path, onNavigate, onOpenFile, activeFilePath }) 
       } catch(e) { setError(e.message); }
       finally { setLoading(false); }
     })();
-  }, [repo, path, token]);
+  }, [repo, path, token, refreshKey]);
 
   if (loading) return <div style={{ fontSize:"11px", color:"#6e7681", padding:"16px", textAlign:"center" }}>⏳ Loading…</div>;
   if (error)   return <div style={{ fontSize:"11px", color:"#f85149", padding:"8px" }}>⚠️ {error}</div>;
@@ -189,17 +189,19 @@ function Breadcrumb({ repo, path, onGoRepo, onNavigate }) {
 
 // ─── File Editor ─────────────────────────────────────────────────────────────
 
-function FileEditor({ token, repo, fileItem, onBack }) {
+function FileEditor({ token, repo, fileItem, onBack, onDeleted }) {
   const [content, setContent] = useState("");
   const [original, setOriginal] = useState("");
   const [sha, setSha]         = useState(fileItem.sha);
   const [loading, setLoading] = useState(true);
   const [error, setError]     = useState("");
-  const [commitMsg, setCommitMsg] = useState("");
+  const [commitMsg, setCommitMsg] = useState(`Update ${fileItem.name}`);
   const [saving, setSaving]   = useState(false);
   const [saveResult, setSaveResult] = useState(null);
   const [search, setSearch]   = useState("");
   const [matchIdx, setMatchIdx] = useState(0);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   const textareaRef = useRef(null);
   const gutterRef    = useRef(null);
@@ -235,6 +237,27 @@ function FileEditor({ token, repo, fileItem, onBack }) {
 
   const goNext = () => { if (!matches.length) return; const n = (matchIdx + 1) % matches.length; setMatchIdx(n); jumpToMatch(n); };
   const goPrev = () => { if (!matches.length) return; const n = (matchIdx - 1 + matches.length) % matches.length; setMatchIdx(n); jumpToMatch(n); };
+
+  // ── delete file (GitHub style: click once to arm, again to confirm) ──
+  const handleDeleteClick = () => {
+    if (!confirmDelete) { setConfirmDelete(true); setCommitMsg(`Delete ${fileItem.name}`); return; }
+    handleDelete();
+  };
+
+  const handleDelete = async () => {
+    setDeleting(true); setSaveResult(null);
+    try {
+      await gh(`/repos/${repo}/contents/${fileItem.path}`, token, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: commitMsg.trim() || `Delete ${fileItem.name}`, sha }),
+      });
+      onDeleted && onDeleted();
+    } catch(e) {
+      setSaveResult({ ok:false, msg:`❌ ${e.message}` });
+      setConfirmDelete(false);
+    } finally { setDeleting(false); }
+  };
 
   useEffect(() => {
     (async () => {
@@ -276,7 +299,23 @@ function FileEditor({ token, repo, fileItem, onBack }) {
         <span style={{ fontSize:"15px" }}>{fileIcon(fileItem.name)}</span>
         <span style={{ fontSize:"12px", color:"#c9d1d9", fontWeight:700, flex:1, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{fileItem.path}</span>
         {isDirty && <span style={{ fontSize:"10px", color:"#e3b341", flexShrink:0 }}>● unsaved</span>}
+        <button
+          onClick={handleDeleteClick}
+          disabled={saving || deleting}
+          title="Delete file"
+          style={{ background:"none", border:"none", color:"#f85149", cursor: deleting ? "not-allowed" : "pointer", fontSize:"15px", padding:"0", lineHeight:1, flexShrink:0 }}
+        >
+          {deleting ? "⏳" : "🗑️"}
+        </button>
       </div>
+
+      {confirmDelete && !deleting && (
+        <div style={{ display:"flex", alignItems:"center", gap:"8px", background:"#2d1214", border:"1px solid #f85149", borderRadius:"8px", padding:"9px 13px", fontSize:"11.5px" }}>
+          <span style={{ flex:1, color:"#f85149" }}>⚠️ "{fileItem.name}" delete karna pakka hai?</span>
+          <button onClick={handleDeleteClick} style={{ ...S.btn(false, false), background:"#da3633", border:"1px solid #f85149", color:"#fff", padding:"5px 10px" }}>Confirm</button>
+          <button onClick={() => { setConfirmDelete(false); setCommitMsg(`Update ${fileItem.name}`); }} style={{ ...S.btn(false, false), color:"#8b949e", padding:"5px 10px" }}>Cancel</button>
+        </div>
+      )}
 
       {loading && <div style={{ fontSize:"11px", color:"#6e7681", textAlign:"center", padding:"24px" }}>⏳ File load ho rahi hai…</div>}
       {error   && <div style={{ fontSize:"11px", color:"#f85149" }}>⚠️ {error}</div>}
@@ -331,7 +370,7 @@ function FileEditor({ token, repo, fileItem, onBack }) {
               placeholder="Commit message..."
               style={S.inp}
             />
-            <button onClick={handleSave} disabled={!isDirty || saving || !commitMsg.trim()} style={S.btn(true, !isDirty || saving || !commitMsg.trim())}>
+            <button onClick={handleSave} disabled={!isDirty || saving || !commitMsg.trim() || deleting} style={S.btn(true, !isDirty || saving || !commitMsg.trim() || deleting)}>
               {saving ? "⏳ Saving…" : isDirty ? "💾 Save & Commit" : "✅ No changes"}
             </button>
             {saveResult && <div style={{ fontSize:"11px", color: saveResult.ok ? "#3fb950":"#f85149" }}>{saveResult.msg}</div>}
@@ -351,6 +390,7 @@ export default function ExplorerTab({ token }) {
   const [currentPath, setCurrentPath]   = useState("");   // current dir path
   const [openFile, setOpenFile]         = useState(null); // file item being edited
   const [activeFilePath, setActiveFilePath] = useState("");
+  const [refreshKey, setRefreshKey]     = useState(0);
 
   const handleSelectRepo = (repo) => {
     setSelectedRepo(repo);
@@ -375,6 +415,13 @@ export default function ExplorerTab({ token }) {
   const handleBackToDir = () => {
     setView("browser");
     setOpenFile(null);
+  };
+
+  const handleFileDeleted = () => {
+    setView("browser");
+    setOpenFile(null);
+    setActiveFilePath("");
+    setRefreshKey(k => k + 1);
   };
 
   const handleGoRepo = () => {
@@ -428,6 +475,7 @@ export default function ExplorerTab({ token }) {
                 onNavigate={handleNavigate}
                 onOpenFile={handleOpenFile}
                 activeFilePath={activeFilePath}
+                refreshKey={refreshKey}
               />
             </div>
           )}
@@ -439,6 +487,7 @@ export default function ExplorerTab({ token }) {
               repo={selectedRepo.full_name}
               fileItem={openFile}
               onBack={handleBackToDir}
+              onDeleted={handleFileDeleted}
             />
           )}
         </>
