@@ -202,6 +202,7 @@ function FileEditor({ token, repo, fileItem, onBack, onDeleted }) {
   const [matchIdx, setMatchIdx] = useState(0);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [aiGenerating, setAiGenerating] = useState(false);
 
   const textareaRef = useRef(null);
   const gutterRef    = useRef(null);
@@ -298,6 +299,23 @@ function FileEditor({ token, repo, fileItem, onBack, onDeleted }) {
     } finally { setSaving(false); }
   };
 
+  const handleGenerateCommitMsg = async () => {
+    if (!isDirty || aiGenerating) return;
+    setAiGenerating(true); setSaveResult(null);
+    try {
+      const res = await fetch("/api/ai/commit-message", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ fileName: fileItem.name, original, updated: content }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "AI commit message fail ho gaya");
+      setCommitMsg(data.message);
+    } catch(e) {
+      setSaveResult({ ok:false, msg:`❌ ${e.message}` });
+    } finally { setAiGenerating(false); }
+  };
+
   return (
     <div style={{ display:"flex", flexDirection:"column", gap:"10px" }}>
       {/* File header */}
@@ -370,13 +388,23 @@ function FileEditor({ token, repo, fileItem, onBack, onDeleted }) {
           </div>
 
           <div style={{ background:"#0d1117", border:"1px solid #30363d", borderRadius:"8px", padding:"12px", display:"flex", flexDirection:"column", gap:"8px" }}>
-            <input
-              type="text" value={commitMsg}
-              onChange={e => setCommitMsg(e.target.value)}
-              onKeyDown={e => e.key === "Enter" && isDirty && !saving && handleSave()}
-              placeholder="Commit message..."
-              style={S.inp}
-            />
+            <div style={{ display:"flex", gap:"6px" }}>
+              <input
+                type="text" value={commitMsg}
+                onChange={e => setCommitMsg(e.target.value)}
+                onKeyDown={e => e.key === "Enter" && isDirty && !saving && handleSave()}
+                placeholder="Commit message..."
+                style={{ ...S.inp, flex:1 }}
+              />
+              <button
+                onClick={handleGenerateCommitMsg}
+                disabled={!isDirty || aiGenerating}
+                title="AI se commit message banao"
+                style={{ ...S.btn(false, !isDirty || aiGenerating), padding:"8px 12px", flexShrink:0 }}
+              >
+                {aiGenerating ? "⏳" : "✨"}
+              </button>
+            </div>
             <button onClick={handleSave} disabled={!isDirty || saving || !commitMsg.trim() || deleting} style={S.btn(true, !isDirty || saving || !commitMsg.trim() || deleting)}>
               {saving ? "⏳ Saving…" : isDirty ? "💾 Save & Commit" : "✅ No changes"}
             </button>
