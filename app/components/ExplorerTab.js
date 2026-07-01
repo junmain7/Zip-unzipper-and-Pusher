@@ -203,6 +203,7 @@ function FileEditor({ token, repo, fileItem, onBack, onDeleted }) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [aiGenerating, setAiGenerating] = useState(false);
+  const commitTouchedRef = useRef(false);
 
   const textareaRef = useRef(null);
   const gutterRef    = useRef(null);
@@ -316,6 +317,13 @@ function FileEditor({ token, repo, fileItem, onBack, onDeleted }) {
     } finally { setAiGenerating(false); }
   };
 
+  // typing rukne ke 1.2s baad khud commit message generate ho jaata hai (agar user ne khud type nahi kiya)
+  useEffect(() => {
+    if (!isDirty || commitTouchedRef.current) return;
+    const t = setTimeout(() => { handleGenerateCommitMsg(); }, 1200);
+    return () => clearTimeout(t);
+  }, [content]);
+
   return (
     <div style={{ display:"flex", flexDirection:"column", gap:"10px" }}>
       {/* File header */}
@@ -391,13 +399,13 @@ function FileEditor({ token, repo, fileItem, onBack, onDeleted }) {
             <div style={{ display:"flex", gap:"6px" }}>
               <input
                 type="text" value={commitMsg}
-                onChange={e => setCommitMsg(e.target.value)}
+                onChange={e => { setCommitMsg(e.target.value); commitTouchedRef.current = true; }}
                 onKeyDown={e => e.key === "Enter" && isDirty && !saving && handleSave()}
                 placeholder="Commit message..."
                 style={{ ...S.inp, flex:1 }}
               />
               <button
-                onClick={handleGenerateCommitMsg}
+                onClick={() => { commitTouchedRef.current = false; handleGenerateCommitMsg(); }}
                 disabled={!isDirty || aiGenerating}
                 title="AI se commit message banao"
                 style={{ ...S.btn(false, !isDirty || aiGenerating), padding:"8px 12px", flexShrink:0 }}
