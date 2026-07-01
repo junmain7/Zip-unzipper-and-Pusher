@@ -4,6 +4,42 @@ import { useState, useRef, useEffect } from "react";
 import { fetchUserRepos, createRepo, getDefaultBranch, downloadRepoZip, updateRef } from "../../lib/github";
 import { loadBackups, saveBackups } from "../../lib/storage";
 
+// Uint8Array ke pehle kuch bytes mein null byte mile to file ko binary maan lo
+// (text snippet bhejne layak nahi) — best-effort check hai, 100% accurate nahi.
+function looksLikeText(bytes) {
+  if (!bytes || !bytes.length) return true;
+  const len = Math.min(bytes.length, 512);
+  for (let i = 0; i < len; i++) {
+    if (bytes[i] === 0) return false;
+  }
+  return true;
+}
+
+// ZIP push ya multi-file push ke "toPush" list (naam + status + binary data)
+// se ek hi AI commit message generate karo — Groq ko sirf naam/status aur
+// kuch text files ke chhote snippets bhejta hai.
+export async function generateAICommitMessage(toPush) {
+  if (!toPush || !toPush.length) throw new Error("Koi changed file nahi mili");
+
+  const decoder = new TextDecoder("utf-8", { fatal: false });
+  const files = toPush.slice(0, 50).map((f) => {
+    const entry = { name: f.name, status: f.fileStatus };
+    if (looksLikeText(f.data)) {
+      try { entry.snippet = decoder.decode(f.data.slice(0, 800)); } catch {}
+    }
+    return entry;
+  });
+
+  const res = await fetch("/api/ai/commit-message", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ files, totalCount: toPush.length }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || "AI commit message fail ho gaya");
+  return data.message;
+}
+
 export function RepoSelector({ token, selectedRepo, setSelectedRepo }) {
   const [repoMode, setRepoMode] = useState("existing");
   const [repos, setRepos] = useState([]);

@@ -4,11 +4,13 @@ import { useState, useRef } from "react";
 import { readFileAsUint8, autoConvertPath } from "../../lib/zip";
 import { smartPush, computeDiff, pushDiff, fetchRepoFolders } from "../../lib/github";
 import { loadBackups, addHistoryEntry } from "../../lib/storage";
-import { RepoSelector, LogsPanel, SummaryCard, DiffBadge, BackupToggle, RestorePointsModal, ConfirmPushModal } from "./PushShared";
+import { RepoSelector, LogsPanel, SummaryCard, DiffBadge, BackupToggle, RestorePointsModal, ConfirmPushModal, generateAICommitMessage } from "./PushShared";
 
 export default function FilesTab({ token, selectedRepo, setSelectedRepo }) {
   const [indivFiles, setIndivFiles] = useState([]);
   const [commitMsg, setCommitMsg] = useState("File update via pusher");
+  const [aiGenerating, setAiGenerating] = useState(false);
+  const [aiError, setAiError] = useState("");
   const [logs, setLogs] = useState([]);
   const [status, setStatus] = useState("idle");
   const [summary, setSummary] = useState(null);
@@ -42,6 +44,17 @@ export default function FilesTab({ token, selectedRepo, setSelectedRepo }) {
     e.target.value = "";
   };
 
+  // Selected files ko actual binary data mein read karta hai — push flow aur
+  // AI commit-message dono isi ko use karte hain.
+  const readSelectedFiles = async () => {
+    const processed = [];
+    for (const { file, repoPath } of indivFiles) {
+      const data = await readFileAsUint8(file);
+      processed.push({ name: repoPath.trim(), data });
+    }
+    return processed;
+  };
+
   const handlePushClick = async () => {
     const parsed = getOwnerRepo();
     if (!parsed) { log("⚠️ Repo select karo!", "error"); return; }
@@ -52,15 +65,35 @@ export default function FilesTab({ token, selectedRepo, setSelectedRepo }) {
     setShowConfirm(true);
     setDiff(null); setDiffError(""); setDiffLoading(true);
     try {
-      const processed = [];
-      for (const { file, repoPath } of indivFiles) {
-        const data = await readFileAsUint8(file);
-        processed.push({ name: repoPath.trim(), data });
-      }
+      const processed = await readSelectedFiles();
       const d = await computeDiff({ filesToProcess: processed, owner: parsed.owner, repo: parsed.repo, token, log });
       setDiff(d);
     } catch (e) { setDiffError(e.message); }
     finally { setDiffLoading(false); }
+  };
+
+  // Select ki hui files ko repo se compare karke Groq se ek commit message
+  // banwata hai — seedha commit box mein set ho jaata hai.
+  const handleGenerateCommitMsg = async () => {
+    const parsed = getOwnerRepo();
+    if (!parsed) { setAiError("Repo select karo!"); return; }
+    if (!indivFiles.length) { setAiError("Koi file select nahi!"); return; }
+    const emptyPath = indivFiles.find(f => !f.repoPath.trim());
+    if (emptyPath) { setAiError(`"${emptyPath.file.name}" ka path empty hai!`); return; }
+    if (aiGenerating) return;
+
+    setAiGenerating(true); setAiError("");
+    try {
+      const processed = await readSelectedFiles();
+      const d = await computeDiff({ filesToProcess: processed, owner: parsed.owner, repo: parsed.repo, token, log });
+      if (!d.toPush || !d.toPush.length) { setAiError("Koi changed file nahi mili"); return; }
+      const msg = await generateAICommitMessage(d.toPush);
+      setCommitMsg(msg);
+    } catch (e) {
+      setAiError(e.message);
+    } finally {
+      setAiGenerating(false);
+    }
   };
 
   const handlePush = async () => {
@@ -117,7 +150,24 @@ export default function FilesTab({ token, selectedRepo, setSelectedRepo }) {
 
       <div>
         <div style={{ fontSize: "11px", color: "#8b949e", marginBottom: "5px" }}>💬 Commit Message</div>
-        <input type="text" value={commitMsg} onChange={e => setCommitMsg(e.target.value)} style={inp} />
+        <div style={{ display: "flex", gap: "6px" }}>
+          <input type="text" value={commitMsg} onChange={e => setCommitMsg(e.target.value)} style={{ ...inp, flex: 1 }} />
+          <button
+            onClick={handleGenerateCommitMsg}
+            disabled={aiGenerating || !selectedRepo || !indivFiles.length}
+            title="AI se commit message banao"
+            style={{
+              background: "#161b22", border: "1px solid #30363d",
+              color: aiGenerating || !selectedRepo || !indivFiles.length ? "#484f58" : "#a371f7",
+              borderRadius: "6px", padding: "9px 12px", fontSize: "13px",
+              cursor: aiGenerating || !selectedRepo || !indivFiles.length ? "not-allowed" : "pointer",
+              fontFamily: "inherit", flexShrink: 0,
+            }}
+          >
+            {aiGenerating ? "⏳" : "✨"}
+          </button>
+        </div>
+        {aiError && <div style={{ fontSize: "10.5px", color: "#f85149", marginTop: "4px" }}>❌ {aiError}</div>}
       </div>
 
       {/* Convention info */}

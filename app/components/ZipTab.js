@@ -4,7 +4,7 @@ import { useState, useRef, useEffect } from "react";
 import { readFileAsArrayBuffer, parseZip, decompressFile, detectWrapperFolder, stripAllWrapperLevels, getWrapperChain, stripExactLevels } from "../../lib/zip";
 import { smartPush, computeDiff, pushDiff, fetchRepoFolders } from "../../lib/github";
 import { loadBackups, addHistoryEntry } from "../../lib/storage";
-import { RepoSelector, LogsPanel, SummaryCard, DiffBadge, BackupToggle, RestorePointsModal, ConfirmPushModal } from "./PushShared";
+import { RepoSelector, LogsPanel, SummaryCard, DiffBadge, BackupToggle, RestorePointsModal, ConfirmPushModal, generateAICommitMessage } from "./PushShared";
 
 export default function ZipTab({ token, selectedRepo, setSelectedRepo }) {
   const [zipFile, setZipFile] = useState(null);
@@ -13,6 +13,8 @@ export default function ZipTab({ token, selectedRepo, setSelectedRepo }) {
   const [autoLevel, setAutoLevel] = useState(0); // auto-detected strip depth, used as default highlight
   const [rawZipFiles, setRawZipFiles] = useState(null); // parsed zip entries (names only) — used to compute root preview
   const [commitMsg, setCommitMsg] = useState("Smart diff update via ZIP pusher");
+  const [aiGenerating, setAiGenerating] = useState(false);
+  const [aiError, setAiError] = useState("");
   const [logs, setLogs] = useState([]);
   const [status, setStatus] = useState("idle");
   const [summary, setSummary] = useState(null);
@@ -52,6 +54,43 @@ export default function ZipTab({ token, selectedRepo, setSelectedRepo }) {
     return () => { cancelled = true; };
   }, [selectedRepo, token]);
 
+  // ZIP ko read/parse/decompress/strip karke final files list deta hai —
+  // isi logic ko push flow aur AI commit-message dono use karte hain.
+  const buildDecompressedFiles = async () => {
+    log(`📦 ZIP read ho raha hai...`);
+    const buffer = await readFileAsArrayBuffer(zipFile);
+    const rawFiles = parseZip(buffer);
+    log(`✅ ${rawFiles.length} files mili`);
+
+    const wrapperDetected = detectWrapperFolder(rawFiles, repoRootFolders);
+    log(wrapperDetected ? `📁 Wrapper folder detected — strip kar raha hai` : `📁 Koi wrapper folder nahi — paths as-is rahenge`);
+
+    log(`🔓 Decompress ho rahi hain...`);
+    const rawDecompressed = [];
+    for (const f of rawFiles) {
+      try {
+        const data = await decompressFile(f);
+        if (f.name) rawDecompressed.push({ name: f.name, data });
+      } catch (e) { log(`⚠️ Skip: ${f.name} — ${e.message}`, "warn"); }
+    }
+
+    // Strip karne se pehle decompress kiya — taaki nested wrapper levels
+    // (jaise "Wrapper/RepoName/app/page.js") sahi se detect ho sakein.
+    // Agar user ne manually exact level select kiya hai (chain se), to
+    // wahi use karo — chahe auto-detect kuch bhi kahe. Warna auto-detect
+    // (repo ke actual root folders se compare karke) khud decide karega.
+    let decompressed;
+    if (manualLevel !== null) {
+      decompressed = stripExactLevels(rawDecompressed, manualLevel);
+      log(manualLevel > 0 ? `📁 Manually ${manualLevel} level(s) strip kiye` : `📁 Manual: koi strip nahi kiya, paths as-is`);
+    } else {
+      const { files, levelsStripped, strippedFolderNames } = stripAllWrapperLevels(rawDecompressed, repoRootFolders);
+      decompressed = files;
+      if (levelsStripped > 0) log(`📁 ${levelsStripped} wrapper level(s) strip kiye: ${strippedFolderNames.join(" → ")}`);
+    }
+    return decompressed;
+  };
+
   // Step 1: prepare files, show confirm modal
   const handlePushClick = async () => {
     const parsed = getOwnerRepo();
@@ -60,38 +99,7 @@ export default function ZipTab({ token, selectedRepo, setSelectedRepo }) {
 
     setStatus("running"); setLogs([]); setSummary(null);
     try {
-      log(`📦 ZIP read ho raha hai...`);
-      const buffer = await readFileAsArrayBuffer(zipFile);
-      const rawFiles = parseZip(buffer);
-      log(`✅ ${rawFiles.length} files mili`);
-
-      const wrapperDetected = detectWrapperFolder(rawFiles, repoRootFolders);
-      log(wrapperDetected ? `📁 Wrapper folder detected — strip kar raha hai` : `📁 Koi wrapper folder nahi — paths as-is rahenge`);
-
-      log(`🔓 Decompress ho rahi hain...`);
-      const rawDecompressed = [];
-      for (const f of rawFiles) {
-        try {
-          const data = await decompressFile(f);
-          if (f.name) rawDecompressed.push({ name: f.name, data });
-        } catch (e) { log(`⚠️ Skip: ${f.name} — ${e.message}`, "warn"); }
-      }
-
-      // Strip karne se pehle decompress kiya — taaki nested wrapper levels
-      // (jaise "Wrapper/RepoName/app/page.js") sahi se detect ho sakein.
-      // Agar user ne manually exact level select kiya hai (chain se), to
-      // wahi use karo — chahe auto-detect kuch bhi kahe. Warna auto-detect
-      // (repo ke actual root folders se compare karke) khud decide karega.
-      let decompressed;
-      if (manualLevel !== null) {
-        decompressed = stripExactLevels(rawDecompressed, manualLevel);
-        log(manualLevel > 0 ? `📁 Manually ${manualLevel} level(s) strip kiye` : `📁 Manual: koi strip nahi kiya, paths as-is`);
-      } else {
-        const { files, levelsStripped, strippedFolderNames } = stripAllWrapperLevels(rawDecompressed, repoRootFolders);
-        decompressed = files;
-        if (levelsStripped > 0) log(`📁 ${levelsStripped} wrapper level(s) strip kiye: ${strippedFolderNames.join(" → ")}`);
-      }
-
+      const decompressed = await buildDecompressedFiles();
 
       log(`✅ ${decompressed.length} files ready — confirm karo`);
       setPendingFiles(decompressed);
@@ -107,6 +115,28 @@ export default function ZipTab({ token, selectedRepo, setSelectedRepo }) {
       } catch (e) { setDiffError(e.message); }
       finally { setDiffLoading(false); }
     } catch (e) { log(`❌ ${e.message}`, "error"); setStatus("error"); }
+  };
+
+  // ZIP mein jo bhi naye/changed files hain unhe repo se compare karke Groq se
+  // ek commit message banwata hai — isi commit box mein set ho jaata hai.
+  const handleGenerateCommitMsg = async () => {
+    const parsed = getOwnerRepo();
+    if (!parsed) { setAiError("Repo select karo!"); return; }
+    if (!zipFile) { setAiError("ZIP file choose karo!"); return; }
+    if (aiGenerating) return;
+
+    setAiGenerating(true); setAiError("");
+    try {
+      const decompressed = await buildDecompressedFiles();
+      const d = await computeDiff({ filesToProcess: decompressed, owner: parsed.owner, repo: parsed.repo, token, log });
+      if (!d.toPush || !d.toPush.length) { setAiError("Koi changed file nahi mili"); return; }
+      const msg = await generateAICommitMessage(d.toPush);
+      setCommitMsg(msg);
+    } catch (e) {
+      setAiError(e.message);
+    } finally {
+      setAiGenerating(false);
+    }
   };
 
   // Step 2: actually push, after confirm — same precomputed diff use hota hai
@@ -144,7 +174,24 @@ export default function ZipTab({ token, selectedRepo, setSelectedRepo }) {
 
       <div>
         <div style={{ fontSize: "11px", color: "#8b949e", marginBottom: "5px" }}>💬 Commit Message</div>
-        <input type="text" value={commitMsg} onChange={e => setCommitMsg(e.target.value)} style={inp} />
+        <div style={{ display: "flex", gap: "6px" }}>
+          <input type="text" value={commitMsg} onChange={e => setCommitMsg(e.target.value)} style={{ ...inp, flex: 1 }} />
+          <button
+            onClick={handleGenerateCommitMsg}
+            disabled={aiGenerating || !selectedRepo || !zipFile}
+            title="AI se commit message banao"
+            style={{
+              background: "#161b22", border: "1px solid #30363d",
+              color: aiGenerating || !selectedRepo || !zipFile ? "#484f58" : "#a371f7",
+              borderRadius: "6px", padding: "9px 12px", fontSize: "13px",
+              cursor: aiGenerating || !selectedRepo || !zipFile ? "not-allowed" : "pointer",
+              fontFamily: "inherit", flexShrink: 0,
+            }}
+          >
+            {aiGenerating ? "⏳" : "✨"}
+          </button>
+        </div>
+        {aiError && <div style={{ fontSize: "10.5px", color: "#f85149", marginTop: "4px" }}>❌ {aiError}</div>}
       </div>
 
       <div>
