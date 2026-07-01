@@ -60,10 +60,10 @@ export default function InvitePage() {
         <div style={card}>
           <div style={{ fontSize: "36px", marginBottom: "10px" }}>❌</div>
           <div style={{ fontSize: "15px", fontWeight: 700, color: "#f85149", marginBottom: "6px" }}>
-            Invalid ya Expired Link
+            Invalid or Expired Link
           </div>
           <div style={{ fontSize: "12px", color: "#8b949e" }}>
-            Yeh invite link kaam nahi kar raha. Jisne bheja hai unse naya link maango.
+            Ask the sender for a new invite link.
           </div>
         </div>
       </div>
@@ -75,12 +75,11 @@ export default function InvitePage() {
       <div style={card}>
         <div style={{ fontSize: "36px", marginBottom: "10px" }}>🐙</div>
         <div style={{ fontSize: "15px", fontWeight: 700, color: "#f0f6fc", marginBottom: "6px" }}>
-          GitHub Account Connect Karo
+          Connect Your GitHub
         </div>
         <div style={{ fontSize: "12px", color: "#8b949e", marginBottom: "20px", lineHeight: 1.5 }}>
-          <strong style={{ color: "#58a6ff" }}>{ownerName}</strong> ne aapko invite kiya hai apna GitHub
-          account connect karne ke liye. Ek click mein authorize karo — aapka password ya token kahin
-          share nahi hota.
+          <strong style={{ color: "#58a6ff" }}>{ownerName}</strong> invited you to connect your GitHub
+          account. One click, no password shared.
         </div>
         <a
           href={`/api/auth/invite/start?token=${token}`}
@@ -101,7 +100,7 @@ export default function InvitePage() {
           🔗 Connect with GitHub
         </a>
         <div style={{ fontSize: "10px", color: "#484f58", marginTop: "14px" }}>
-          Secure OAuth authorization via GitHub · No password shared
+          Secure OAuth · Single use
         </div>
       </div>
     </div>

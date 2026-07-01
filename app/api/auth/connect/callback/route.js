@@ -65,7 +65,7 @@ export async function GET(request) {
   // ── Error from GitHub (user ne cancel kiya) ──
   if (errorParam) {
     return isInviteFlow
-      ? invitePage("Cancelled", "Aapne GitHub authorization cancel kar diya.", false)
+      ? invitePage("Cancelled", "You cancelled GitHub authorization.", false)
       : postAndClose({ type: "gh-connect-error", message: errorParam });
   }
 
@@ -76,20 +76,20 @@ export async function GET(request) {
   // ══════════════════ INVITE FLOW ══════════════════
   if (isInviteFlow) {
     if (!code || !state || state !== inviteState) {
-      return invitePage("Invalid Request", "Link expire ho gaya ya invalid hai. Naya invite link maango.", false);
+      return invitePage("Invalid Link", "This link is invalid or expired.", false);
     }
 
     const inviteSnap = await adminDb.collection("invites").doc(inviteToken).get();
     if (!inviteSnap.exists) {
-      return invitePage("Invalid Invite", "Yeh invite link valid nahi hai ya revoke ho chuka hai.", false);
+      return invitePage("Invalid Link", "This invite link is no longer valid.", false);
     }
     const invite = inviteSnap.data();
     if (invite.expiresAt !== null && (!invite.expiresAt || invite.expiresAt < Date.now())) {
-      return invitePage("Link Expired", "Yeh invite link expire ho chuka hai. Naya link maango.", false);
+      return invitePage("Link Expired", "This invite link has expired.", false);
     }
     const ownerUid = invite.ownerUid;
     if (!ownerUid) {
-      return invitePage("Invalid Invite", "Invite se owner nahi mila.", false);
+      return invitePage("Invalid Link", "Could not find the invite owner.", false);
     }
 
     try {
@@ -100,14 +100,14 @@ export async function GET(request) {
       });
       const tokenData = await tokenRes.json();
       if (!tokenData.access_token) {
-        return invitePage("Failed", tokenData.error_description || "Token exchange failed. Dobara try karo.", false);
+        return invitePage("Failed", "Authorization failed. Please try again.", false);
       }
 
       const userRes = await fetch("https://api.github.com/user", {
         headers: { Authorization: `token ${tokenData.access_token}`, Accept: "application/vnd.github.v3+json" },
       });
       if (!userRes.ok) {
-        return invitePage("Failed", "GitHub profile fetch nahi ho paya.", false);
+        return invitePage("Failed", "Could not fetch GitHub profile.", false);
       }
       const ghUser = await userRes.json();
 
@@ -150,14 +150,14 @@ export async function GET(request) {
 
       const res = invitePage(
         "Connected!",
-        `Aapka GitHub account (@${ghUser.login}) ${invite.ownerName || "owner"} ke app mein safaltapoorvak connect ho gaya hai. Ab aap yeh tab band kar sakte hain.`,
+        `@${ghUser.login} is now connected. You can close this tab.`,
         true
       );
       res.cookies.delete("gh_invite_state");
       res.cookies.delete("gh_invite_token");
       return res;
     } catch (e) {
-      return invitePage("Error", "Kuch galat ho gaya. Dobara try karo.", false);
+      return invitePage("Error", "Something went wrong. Please try again.", false);
     }
   }
 
