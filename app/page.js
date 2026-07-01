@@ -12,7 +12,7 @@ import Sidebar from "./components/Sidebar";
 import ZipTab from "./components/ZipTab";
 import FilesTab from "./components/FilesTab";
 import HistoryTab from "./components/HistoryTab";
-import AccountsTab, { AddAccountModal, SwitchAccountModal, AccountsSkeleton } from "./components/AccountsTab";
+import AccountsTab, { AddAccountModal, SwitchAccountModal, AccountsSkeleton, InviteLinkModal } from "./components/AccountsTab";
 import PullToRefresh from "./components/PullToRefresh";
 import ExplorerTab from "./components/ExplorerTab";
 
@@ -29,6 +29,7 @@ export default function ZipPusherPage() {
   const [showAccountMenu, setShowAccountMenu] = useState(false);
   const [showAddModal, setShowAddModal] = useState(false);
   const [showSwitchModal, setShowSwitchModal] = useState(false);
+  const [showInviteModal, setShowInviteModal] = useState(false);
   const [installPrompt, setInstallPrompt] = useState(null);
   const [isInstalled, setIsInstalled] = useState(false);
   const scrollRef = useRef(null);
@@ -130,6 +131,7 @@ export default function ZipPusherPage() {
         setSidebarOpen={setSidebarOpen}
         setShowSwitchModal={setShowSwitchModal}
         setShowAddModal={setShowAddModal}
+        setShowInviteModal={setShowInviteModal}
         isInstalled={isInstalled}
         installPrompt={installPrompt}
         handleInstallClick={handleInstallClick}
@@ -189,6 +191,11 @@ export default function ZipPusherPage() {
           setSelectedRepo={setSelectedRepo}
           onAddNew={() => setShowAddModal(true)}
         />
+      )}
+
+      {/* Invite Link Modal */}
+      {showInviteModal && (
+        <InviteLinkModal onClose={() => setShowInviteModal(false)} />
       )}
     </div>
   );
