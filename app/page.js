@@ -12,7 +12,7 @@ import Sidebar from "./components/Sidebar";
 import ZipTab from "./components/ZipTab";
 import FilesTab from "./components/FilesTab";
 import HistoryTab from "./components/HistoryTab";
-import AccountsTab, { AddAccountModal, SwitchAccountModal, AccountsSkeleton, InviteLinkModal } from "./components/AccountsTab";
+import AccountsTab, { AddAccountModal, SwitchAccountModal, AccountsSkeleton, InviteLinkModal, AgentLinkModal } from "./components/AccountsTab";
 import PullToRefresh from "./components/PullToRefresh";
 import ExplorerTab from "./components/ExplorerTab";
 
@@ -30,6 +30,7 @@ export default function ZipPusherPage() {
   const [showAddModal, setShowAddModal] = useState(false);
   const [showSwitchModal, setShowSwitchModal] = useState(false);
   const [showInviteModal, setShowInviteModal] = useState(false);
+  const [showAgentModal, setShowAgentModal] = useState(false);
   const [installPrompt, setInstallPrompt] = useState(null);
   const [isInstalled, setIsInstalled] = useState(false);
   const scrollRef = useRef(null);
@@ -132,6 +133,7 @@ export default function ZipPusherPage() {
         setShowSwitchModal={setShowSwitchModal}
         setShowAddModal={setShowAddModal}
         setShowInviteModal={setShowInviteModal}
+        setShowAgentModal={setShowAgentModal}
         isInstalled={isInstalled}
         installPrompt={installPrompt}
         handleInstallClick={handleInstallClick}
@@ -196,6 +198,11 @@ export default function ZipPusherPage() {
       {/* Invite Link Modal */}
       {showInviteModal && (
         <InviteLinkModal onClose={() => setShowInviteModal(false)} />
+      )}
+
+      {/* Agent Link Modal */}
+      {showAgentModal && (
+        <AgentLinkModal accounts={accounts} onClose={() => setShowAgentModal(false)} />
       )}
     </div>
   );

@@ -166,14 +166,6 @@ export default function AccountsTab({ activeAccountId, setActiveAccountId, accou
 
       {showInvite && <InviteLinkModal onClose={() => setShowInvite(false)} />}
 
-      {accounts.length > 0 && (
-        <button onClick={() => setShowAgent(true)} style={{ width: "100%", padding: "12px", borderRadius: "8px", fontSize: "13px", fontWeight: 600, cursor: "pointer", fontFamily: "inherit", background: "#161b22", color: "#ffa657", border: "1px dashed #cc8b3f" }}>
-          🤖 Agent Access Link Banao (repo read karwao)
-        </button>
-      )}
-
-      {showAgent && <AgentLinkModal accounts={accounts} onClose={() => setShowAgent(false)} />}
-
       <div style={{ fontSize: "10px", color: "#484f58", textAlign: "center" }}>PAT localStorage mein save hota hai · Scope chahiye: <code>repo</code></div>
     </div>
   );

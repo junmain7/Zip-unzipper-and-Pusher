@@ -4,7 +4,7 @@ import { signOut } from "next-auth/react";
 
 export default function TopBar({
   session, activeAccount, accounts, showAccountMenu, setShowAccountMenu, menuRef,
-  setSidebarOpen, setShowSwitchModal, setShowAddModal, setShowInviteModal, isInstalled, installPrompt, handleInstallClick,
+  setSidebarOpen, setShowSwitchModal, setShowAddModal, setShowInviteModal, setShowAgentModal, isInstalled, installPrompt, handleInstallClick,
 }) {
   return (
     <>
@@ -103,6 +103,17 @@ export default function TopBar({
                   <span style={{ fontSize: "15px", width: "20px", textAlign: "center" }}>🔗</span>
                   <span style={{ fontSize: "12.5px", color: "#c9d1d9", fontWeight: 500 }}>Invite link</span>
                 </button>
+
+                {accounts.length > 0 && (
+                  <button
+                    onClick={() => { setShowAgentModal(true); setShowAccountMenu(false); }}
+                    className="sp-menu-item"
+                    style={{ width: "100%", background: "none", border: "none", cursor: "pointer", padding: "10px 11px", display: "flex", alignItems: "center", gap: "11px", fontFamily: "inherit", borderRadius: "8px", transition: "background 0.12s ease" }}
+                  >
+                    <span style={{ fontSize: "15px", width: "20px", textAlign: "center" }}>🤖</span>
+                    <span style={{ fontSize: "12.5px", color: "#c9d1d9", fontWeight: 500 }}>Agent link</span>
+                  </button>
+                )}
               </div>
 
               {/* Install App */}
