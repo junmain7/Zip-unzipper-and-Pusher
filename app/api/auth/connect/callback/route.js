@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { adminDb } from "../../../../../lib/firebaseAdmin";
 
 function htmlResponse(scriptBody) {
   return new NextResponse(
@@ -24,40 +25,152 @@ function postAndClose(payload) {
   `);
 }
 
+function invitePage(title, message, ok) {
+  return new NextResponse(
+    `<!DOCTYPE html><html><head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>${title}</title></head>
+    <body style="background:#0d1117;color:#c9d1d9;font-family:'JetBrains Mono','Fira Code',monospace;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;padding:20px;box-sizing:border-box;">
+      <div style="text-align:center;max-width:340px;">
+        <div style="font-size:40px;margin-bottom:12px;">${ok ? "✅" : "❌"}</div>
+        <div style="font-size:15px;font-weight:700;color:${ok ? "#3fb950" : "#f85149"};margin-bottom:8px;">${title}</div>
+        <div style="font-size:13px;color:#8b949e;line-height:1.5;">${message}</div>
+      </div>
+    </body></html>`,
+    { headers: { "Content-Type": "text/html" } }
+  );
+}
+
 // GET /api/auth/connect/callback
-// Exchanges the OAuth `code` for an access token, fetches the GitHub
-// profile, then hands both back to the opener window via postMessage.
-// NOTE: a GitHub OAuth App access token (unlike fine-grained PATs) does
-// NOT expire by default — it stays valid until the user revokes app
-// access, which is exactly the "permanent token" behaviour requested.
+// Do flows isi ek registered redirect_uri se handle hote hain (GitHub OAuth
+// Apps sirf ek hi callback URL allow karte hain):
+//   1) Normal "Connect with GitHub" — popup window, khud ke account add karna
+//      (gh_connect_state cookie se pehchana jaata hai) — postMessage se opener
+//      ko wapas bhejta hai.
+//   2) "Invite link" flow — kisi doosre insaan ka GitHub account is app ke
+//      owner ke accounts list mein add karna (gh_invite_token/gh_invite_state
+//      cookie se pehchana jaata hai) — full-page success/error dikhata hai,
+//      koi opener nahi hota kyunki yeh alag device/browser se aaya hota hai.
 export async function GET(request) {
   const url = new URL(request.url);
   const code = url.searchParams.get("code");
   const state = url.searchParams.get("state");
   const errorParam = url.searchParams.get("error");
-  const cookieState = request.cookies.get("gh_connect_state")?.value;
 
+  const inviteToken = request.cookies.get("gh_invite_token")?.value;
+  const inviteState = request.cookies.get("gh_invite_state")?.value;
+  const connectState = request.cookies.get("gh_connect_state")?.value;
+
+  const isInviteFlow = Boolean(inviteToken && inviteState);
+
+  // ── Error from GitHub (user ne cancel kiya) ──
   if (errorParam) {
-    return postAndClose({ type: "gh-connect-error", message: errorParam });
-  }
-  if (!code || !state || !cookieState || state !== cookieState) {
-    return postAndClose({ type: "gh-connect-error", message: "Invalid state, try again" });
+    return isInviteFlow
+      ? invitePage("Cancelled", "Aapne GitHub authorization cancel kar diya.", false)
+      : postAndClose({ type: "gh-connect-error", message: errorParam });
   }
 
   const clientId = process.env.GITHUB_CONNECT_ID;
   const clientSecret = process.env.GITHUB_CONNECT_SECRET;
   const redirectUri = `${url.origin}/api/auth/connect/callback`;
 
+  // ══════════════════ INVITE FLOW ══════════════════
+  if (isInviteFlow) {
+    if (!code || !state || state !== inviteState) {
+      return invitePage("Invalid Request", "Link expire ho gaya ya invalid hai. Naya invite link maango.", false);
+    }
+
+    const inviteSnap = await adminDb.collection("invites").doc(inviteToken).get();
+    if (!inviteSnap.exists) {
+      return invitePage("Invalid Invite", "Yeh invite link valid nahi hai ya revoke ho chuka hai.", false);
+    }
+    const invite = inviteSnap.data();
+    if (invite.expiresAt !== null && (!invite.expiresAt || invite.expiresAt < Date.now())) {
+      return invitePage("Link Expired", "Yeh invite link expire ho chuka hai. Naya link maango.", false);
+    }
+    const ownerUid = invite.ownerUid;
+    if (!ownerUid) {
+      return invitePage("Invalid Invite", "Invite se owner nahi mila.", false);
+    }
+
+    try {
+      const tokenRes = await fetch("https://github.com/login/oauth/access_token", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({ client_id: clientId, client_secret: clientSecret, code, redirect_uri: redirectUri }),
+      });
+      const tokenData = await tokenRes.json();
+      if (!tokenData.access_token) {
+        return invitePage("Failed", tokenData.error_description || "Token exchange failed. Dobara try karo.", false);
+      }
+
+      const userRes = await fetch("https://api.github.com/user", {
+        headers: { Authorization: `token ${tokenData.access_token}`, Accept: "application/vnd.github.v3+json" },
+      });
+      if (!userRes.ok) {
+        return invitePage("Failed", "GitHub profile fetch nahi ho paya.", false);
+      }
+      const ghUser = await userRes.json();
+
+      const ownerRef = adminDb.collection("users").doc(ownerUid);
+      const ownerSnap = await ownerRef.get();
+      const existingAccounts = ownerSnap.exists ? (ownerSnap.data().accounts || []) : [];
+
+      const existing = existingAccounts.find((a) => a.login === ghUser.login);
+      let updatedAccounts;
+      if (existing) {
+        updatedAccounts = existingAccounts.map((a) =>
+          a.login === ghUser.login
+            ? { ...a, pat: tokenData.access_token, avatar: ghUser.avatar_url, viaInvite: true }
+            : a
+        );
+      } else {
+        updatedAccounts = [
+          ...existingAccounts,
+          {
+            id: Math.random().toString(36).slice(2),
+            label: ghUser.name || ghUser.login,
+            login: ghUser.login,
+            avatar: ghUser.avatar_url,
+            pat: tokenData.access_token,
+            viaInvite: true,
+          },
+        ];
+      }
+
+      const activeId = ownerSnap.exists ? ownerSnap.data().activeId || null : null;
+      await ownerRef.set({ accounts: updatedAccounts, activeId, updatedAt: Date.now() }, { merge: true });
+
+      // one-time use: connect hote hi invite link ko turant invalid kar do
+      await adminDb.collection("invites").doc(inviteToken).delete().catch(() => {});
+      const ownerInviteRef = adminDb.collection("userInvites").doc(ownerUid);
+      const ownerInviteSnap = await ownerInviteRef.get();
+      if (ownerInviteSnap.exists && ownerInviteSnap.data()?.token === inviteToken) {
+        await ownerInviteRef.delete().catch(() => {});
+      }
+
+      const res = invitePage(
+        "Connected!",
+        `Aapka GitHub account (@${ghUser.login}) ${invite.ownerName || "owner"} ke app mein safaltapoorvak connect ho gaya hai. Ab aap yeh tab band kar sakte hain.`,
+        true
+      );
+      res.cookies.delete("gh_invite_state");
+      res.cookies.delete("gh_invite_token");
+      return res;
+    } catch (e) {
+      return invitePage("Error", "Kuch galat ho gaya. Dobara try karo.", false);
+    }
+  }
+
+  // ══════════════════ NORMAL CONNECT FLOW (popup) ══════════════════
+  if (!code || !state || !connectState || state !== connectState) {
+    return postAndClose({ type: "gh-connect-error", message: "Invalid state, try again" });
+  }
+
   try {
     const tokenRes = await fetch("https://github.com/login/oauth/access_token", {
       method: "POST",
       headers: { "Content-Type": "application/json", Accept: "application/json" },
-      body: JSON.stringify({
-        client_id: clientId,
-        client_secret: clientSecret,
-        code,
-        redirect_uri: redirectUri,
-      }),
+      body: JSON.stringify({ client_id: clientId, client_secret: clientSecret, code, redirect_uri: redirectUri }),
     });
     const tokenData = await tokenRes.json();
 

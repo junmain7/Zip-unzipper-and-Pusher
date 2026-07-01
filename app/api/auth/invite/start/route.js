@@ -19,7 +19,11 @@ export async function GET(request) {
   }
 
   const state = crypto.randomUUID();
-  const redirectUri = `${origin}/api/auth/invite/callback`;
+  // NOTE: GitHub OAuth Apps sirf EK hi callback URL allow karte hain — isliye
+  // hum wahi existing registered "/api/auth/connect/callback" URL use kar rahe
+  // hain. Woh route cookie dekh kar decide karta hai ki yeh normal "connect"
+  // hai ya "invite" flow.
+  const redirectUri = `${origin}/api/auth/connect/callback`;
 
   const authorizeUrl = new URL("https://github.com/login/oauth/authorize");
   authorizeUrl.searchParams.set("client_id", clientId);
