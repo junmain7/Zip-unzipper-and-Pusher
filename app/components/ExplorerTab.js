@@ -31,7 +31,7 @@ function b64Encode(str) {
 
 function fileIcon(name) {
   const ext = (name.split(".").pop() || "").toLowerCase();
-  const m = { js:"🟨",jsx:"🟨",ts:"🔷",tsx:"🔷",json:"📋",md:"📝",css:"🎨",scss:"🎨",html:"🌐",env:"🔐",py:"🐍",sh:"⚙️",yml:"⚙️",yaml:"⚙️",png:"🖼️",jpg:"🖼️",jpeg:"🖼️",svg:"🖼️",gif:"🖼️",webp:"🖼️",lock:"🔒",gitignore:"🙈" };
+  const m = { js:"📄",jsx:"📄",ts:"🔷",tsx:"🔷",json:"📋",md:"📝",css:"🎨",scss:"🎨",html:"🌐",env:"🔐",py:"🐍",sh:"⚙️",yml:"⚙️",yaml:"⚙️",png:"🖼️",jpg:"🖼️",jpeg:"🖼️",svg:"🖼️",gif:"🖼️",webp:"🖼️",lock:"🔒",gitignore:"🙈" };
   return m[ext] || (name.startsWith(".") ? "⚙️" : "📄");
 }
 
