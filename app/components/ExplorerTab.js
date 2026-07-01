@@ -650,23 +650,25 @@ export default function ExplorerTab({ token }) {
           />
 
           {showCreateFile && (
-            <div style={{ background:"#0d1117", border:"1px solid #30363d", borderRadius:"8px", padding:"10px", marginBottom:"8px", display:"flex", flexDirection:"column", gap:"8px" }}>
+            <div style={{ position:"fixed", inset:0, background:"#0d1117", zIndex:1000, display:"flex", flexDirection:"column", padding:"12px" }}>
+              <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:"12px" }}>
+                <span style={{ fontSize:"15px", fontWeight:600, color:"#e6edf3" }}>➕ New file</span>
+                <button onClick={() => { setShowCreateFile(false); setNewFileName(""); setNewFileContent(""); setCreateError(""); }} style={S.btn(false, false)}>✕</button>
+              </div>
               <input
                 autoFocus type="text" value={newFileName}
                 onChange={e => setNewFileName(e.target.value)}
-                onKeyDown={e => e.key === "Enter" && handleCreateFile()}
                 placeholder="File name (e.g. utils.js)"
-                style={S.inp}
+                style={{ ...S.inp, marginBottom:"8px" }}
               />
               <textarea
                 value={newFileContent}
                 onChange={e => setNewFileContent(e.target.value)}
                 placeholder="File content (optional)"
-                rows={8}
-                style={{ ...S.inp, fontFamily:"monospace", resize:"vertical" }}
+                style={{ ...S.inp, fontFamily:"monospace", resize:"none", flex:1 }}
               />
-              {createError && <div style={{ fontSize:"11px", color:"#f85149" }}>⚠️ {createError}</div>}
-              <div style={{ display:"flex", gap:"8px" }}>
+              {createError && <div style={{ fontSize:"11px", color:"#f85149", marginTop:"8px" }}>⚠️ {createError}</div>}
+              <div style={{ display:"flex", gap:"8px", marginTop:"12px" }}>
                 <button onClick={handleCreateFile} disabled={!newFileName.trim() || creatingFile} style={{ ...S.btn(true, !newFileName.trim() || creatingFile), flex:1 }}>
                   {creatingFile ? "⏳ Creating…" : "➕ Create file"}
                 </button>
