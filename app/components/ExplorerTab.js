@@ -484,6 +484,7 @@ export default function ExplorerTab({ token }) {
 
   const [showCreateFile, setShowCreateFile] = useState(false);
   const [newFileName, setNewFileName]       = useState("");
+  const [newFileContent, setNewFileContent] = useState("");
   const [creatingFile, setCreatingFile]     = useState(false);
   const [createError, setCreateError]       = useState("");
 
@@ -545,9 +546,9 @@ export default function ExplorerTab({ token }) {
       await gh(`/repos/${selectedRepo.full_name}/contents/${path}`, token, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: `Create ${name}`, content: b64Encode("") }),
+        body: JSON.stringify({ message: `Create ${name}`, content: b64Encode(newFileContent) }),
       });
-      setShowCreateFile(false); setNewFileName("");
+      setShowCreateFile(false); setNewFileName(""); setNewFileContent("");
       setRefreshKey(k => k + 1);
     } catch(e) {
       setCreateError(e.message);
@@ -657,12 +658,19 @@ export default function ExplorerTab({ token }) {
                 placeholder="File name (e.g. utils.js)"
                 style={S.inp}
               />
+              <textarea
+                value={newFileContent}
+                onChange={e => setNewFileContent(e.target.value)}
+                placeholder="File content (optional)"
+                rows={8}
+                style={{ ...S.inp, fontFamily:"monospace", resize:"vertical" }}
+              />
               {createError && <div style={{ fontSize:"11px", color:"#f85149" }}>⚠️ {createError}</div>}
               <div style={{ display:"flex", gap:"8px" }}>
                 <button onClick={handleCreateFile} disabled={!newFileName.trim() || creatingFile} style={{ ...S.btn(true, !newFileName.trim() || creatingFile), flex:1 }}>
                   {creatingFile ? "⏳ Creating…" : "➕ Create file"}
                 </button>
-                <button onClick={() => { setShowCreateFile(false); setNewFileName(""); setCreateError(""); }} style={S.btn(false, false)}>Cancel</button>
+                <button onClick={() => { setShowCreateFile(false); setNewFileName(""); setNewFileContent(""); setCreateError(""); }} style={S.btn(false, false)}>Cancel</button>
               </div>
             </div>
           )}
