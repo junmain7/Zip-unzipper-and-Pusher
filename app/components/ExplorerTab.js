@@ -187,6 +187,52 @@ function Breadcrumb({ repo, path, onGoRepo, onNavigate }) {
   );
 }
 
+// ─── Dropdown Menu (GitHub-style "⋯") ──────────────────────────────────────────
+
+function DropdownMenu({ items }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onOutside = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    document.addEventListener("mousedown", onOutside);
+    document.addEventListener("touchstart", onOutside);
+    return () => {
+      document.removeEventListener("mousedown", onOutside);
+      document.removeEventListener("touchstart", onOutside);
+    };
+  }, [open]);
+
+  return (
+    <div ref={ref} style={{ position:"relative", flexShrink:0 }}>
+      <button
+        onClick={() => setOpen(o => !o)}
+        style={{ background:"none", border:"none", color:"#8b949e", cursor:"pointer", fontSize:"18px", padding:"2px 8px", lineHeight:1, fontFamily:"inherit" }}
+      >
+        ⋯
+      </button>
+      {open && (
+        <div style={{ position:"absolute", top:"26px", right:0, minWidth:"210px", background:"#161b22", border:"1px solid #30363d", borderRadius:"8px", boxShadow:"0 8px 24px rgba(0,0,0,0.5)", zIndex:50, overflow:"hidden", padding:"4px 0" }}>
+          {items.map((item, i) => item.divider ? (
+            <div key={i} style={{ height:"1px", background:"#30363d", margin:"4px 0" }} />
+          ) : (
+            <button
+              key={i}
+              onClick={() => { setOpen(false); item.onClick(); }}
+              disabled={item.disabled}
+              style={{ width:"100%", textAlign:"left", background:"none", border:"none", color: item.danger ? "#f85149" : "#c9d1d9", fontFamily:"inherit", fontSize:"12.5px", padding:"9px 14px", cursor: item.disabled ? "not-allowed" : "pointer", display:"flex", alignItems:"center", gap:"9px", opacity: item.disabled ? 0.45 : 1 }}
+            >
+              <span style={{ width:"16px", textAlign:"center" }}>{item.icon}</span>
+              <span>{item.label}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── File Editor ─────────────────────────────────────────────────────────────
 
 function FileEditor({ token, repo, fileItem, onBack, onDeleted }) {
@@ -332,14 +378,15 @@ function FileEditor({ token, repo, fileItem, onBack, onDeleted }) {
         <span style={{ fontSize:"15px" }}>{fileIcon(fileItem.name)}</span>
         <span style={{ fontSize:"12px", color:"#c9d1d9", fontWeight:700, flex:1, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{fileItem.path}</span>
         {isDirty && <span style={{ fontSize:"10px", color:"#e3b341", flexShrink:0 }}>● unsaved</span>}
-        <button
-          onClick={handleDeleteClick}
-          disabled={saving || deleting}
-          title="Delete file"
-          style={{ background:"none", border:"none", color:"#f85149", cursor: deleting ? "not-allowed" : "pointer", fontSize:"15px", padding:"0", lineHeight:1, flexShrink:0 }}
-        >
-          {deleting ? "⏳" : "🗑️"}
-        </button>
+        <DropdownMenu items={[
+          {
+            icon: deleting ? "⏳" : "🗑️",
+            label: deleting ? "Deleting…" : "Delete file",
+            danger: true,
+            disabled: saving || deleting,
+            onClick: handleDeleteClick,
+          },
+        ]} />
       </div>
 
       {confirmDelete && !deleting && (
@@ -435,6 +482,19 @@ export default function ExplorerTab({ token }) {
   const [activeFilePath, setActiveFilePath] = useState("");
   const [refreshKey, setRefreshKey]     = useState(0);
 
+  const [showCreateFile, setShowCreateFile] = useState(false);
+  const [newFileName, setNewFileName]       = useState("");
+  const [creatingFile, setCreatingFile]     = useState(false);
+  const [createError, setCreateError]       = useState("");
+
+  const [uploading, setUploading]     = useState(false);
+  const [uploadError, setUploadError] = useState("");
+  const fileInputRef = useRef(null);
+
+  const [confirmDeleteDir, setConfirmDeleteDir] = useState(false);
+  const [deletingDir, setDeletingDir]           = useState(false);
+  const [deleteDirError, setDeleteDirError]     = useState("");
+
   const handleSelectRepo = (repo) => {
     setSelectedRepo(repo);
     setCurrentPath("");
@@ -475,6 +535,82 @@ export default function ExplorerTab({ token }) {
     setActiveFilePath("");
   };
 
+  // ── create new file ──
+  const handleCreateFile = async () => {
+    const name = newFileName.trim();
+    if (!name) return;
+    setCreatingFile(true); setCreateError("");
+    try {
+      const path = currentPath ? `${currentPath}/${name}` : name;
+      await gh(`/repos/${selectedRepo.full_name}/contents/${path}`, token, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: `Create ${name}`, content: b64Encode("") }),
+      });
+      setShowCreateFile(false); setNewFileName("");
+      setRefreshKey(k => k + 1);
+    } catch(e) {
+      setCreateError(e.message);
+    } finally { setCreatingFile(false); }
+  };
+
+  // ── upload files ──
+  const handleUploadFiles = async (fileList) => {
+    if (!fileList || !fileList.length) return;
+    setUploading(true); setUploadError("");
+    try {
+      for (const file of fileList) {
+        const base64 = await new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result.split(",")[1]);
+          reader.onerror = () => reject(new Error("File read fail ho gayi"));
+          reader.readAsDataURL(file);
+        });
+        const path = currentPath ? `${currentPath}/${file.name}` : file.name;
+        await gh(`/repos/${selectedRepo.full_name}/contents/${path}`, token, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ message: `Upload ${file.name}`, content: base64 }),
+        });
+      }
+      setRefreshKey(k => k + 1);
+    } catch(e) {
+      setUploadError(e.message);
+    } finally { setUploading(false); }
+  };
+
+  // ── delete directory (recursively deletes every file inside) ──
+  const listFilesRecursive = async (path) => {
+    const apiPath = path ? `/repos/${selectedRepo.full_name}/contents/${path}` : `/repos/${selectedRepo.full_name}/contents`;
+    const data = await gh(apiPath, token);
+    let files = [];
+    for (const item of data) {
+      if (item.type === "dir") files = files.concat(await listFilesRecursive(item.path));
+      else files.push(item);
+    }
+    return files;
+  };
+
+  const handleDeleteDirectory = async () => {
+    setDeletingDir(true); setDeleteDirError("");
+    try {
+      const files = await listFilesRecursive(currentPath);
+      for (const f of files) {
+        await gh(`/repos/${selectedRepo.full_name}/contents/${f.path}`, token, {
+          method: "DELETE",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ message: `Delete ${currentPath}`, sha: f.sha }),
+        });
+      }
+      const parts = currentPath.split("/");
+      parts.pop();
+      setCurrentPath(parts.join("/"));
+      setRefreshKey(k => k + 1);
+    } catch(e) {
+      setDeleteDirError(e.message);
+    } finally { setDeletingDir(false); setConfirmDeleteDir(false); }
+  };
+
   return (
     <div style={{ display:"flex", flexDirection:"column", gap:"0" }}>
 
@@ -486,13 +622,63 @@ export default function ExplorerTab({ token }) {
       {/* ── File browser ── */}
       {(view === "browser" || view === "editor") && selectedRepo && (
         <>
-          {/* Breadcrumb */}
-          <Breadcrumb
-            repo={selectedRepo.full_name}
-            path={view === "editor" ? openFile?.path : currentPath}
-            onGoRepo={handleGoRepo}
-            onNavigate={(p) => { handleNavigate(p); setView("browser"); }}
+          {/* Breadcrumb + actions menu */}
+          <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between" }}>
+            <Breadcrumb
+              repo={selectedRepo.full_name}
+              path={view === "editor" ? openFile?.path : currentPath}
+              onGoRepo={handleGoRepo}
+              onNavigate={(p) => { handleNavigate(p); setView("browser"); }}
+            />
+            {view === "browser" && (
+              <DropdownMenu items={[
+                { icon:"➕", label:"Create new file", onClick: () => { setShowCreateFile(true); setCreateError(""); } },
+                { icon:"⬆️", label:"Upload files", onClick: () => fileInputRef.current?.click() },
+                { divider:true },
+                { icon:"🗑️", label:"Delete directory", danger:true, disabled: !currentPath, onClick: () => { setConfirmDeleteDir(true); setDeleteDirError(""); } },
+              ]} />
+            )}
+          </div>
+
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            style={{ display:"none" }}
+            onChange={e => { handleUploadFiles(e.target.files); e.target.value = ""; }}
           />
+
+          {showCreateFile && (
+            <div style={{ background:"#0d1117", border:"1px solid #30363d", borderRadius:"8px", padding:"10px", marginBottom:"8px", display:"flex", flexDirection:"column", gap:"8px" }}>
+              <input
+                autoFocus type="text" value={newFileName}
+                onChange={e => setNewFileName(e.target.value)}
+                onKeyDown={e => e.key === "Enter" && handleCreateFile()}
+                placeholder="File name (e.g. utils.js)"
+                style={S.inp}
+              />
+              {createError && <div style={{ fontSize:"11px", color:"#f85149" }}>⚠️ {createError}</div>}
+              <div style={{ display:"flex", gap:"8px" }}>
+                <button onClick={handleCreateFile} disabled={!newFileName.trim() || creatingFile} style={{ ...S.btn(true, !newFileName.trim() || creatingFile), flex:1 }}>
+                  {creatingFile ? "⏳ Creating…" : "➕ Create file"}
+                </button>
+                <button onClick={() => { setShowCreateFile(false); setNewFileName(""); setCreateError(""); }} style={S.btn(false, false)}>Cancel</button>
+              </div>
+            </div>
+          )}
+
+          {uploading && <div style={{ fontSize:"11px", color:"#6e7681", marginBottom:"8px" }}>⏳ Upload ho raha hai…</div>}
+          {uploadError && <div style={{ fontSize:"11px", color:"#f85149", marginBottom:"8px" }}>⚠️ {uploadError}</div>}
+
+          {confirmDeleteDir && !deletingDir && (
+            <div style={{ display:"flex", alignItems:"center", gap:"8px", background:"#2d1214", border:"1px solid #f85149", borderRadius:"8px", padding:"9px 13px", fontSize:"11.5px", marginBottom:"8px" }}>
+              <span style={{ flex:1, color:"#f85149" }}>⚠️ "{currentPath}" poora folder delete karna pakka hai?</span>
+              <button onClick={handleDeleteDirectory} style={{ ...S.btn(false, false), background:"#da3633", border:"1px solid #f85149", color:"#fff", padding:"5px 10px" }}>Confirm</button>
+              <button onClick={() => setConfirmDeleteDir(false)} style={{ ...S.btn(false, false), color:"#8b949e", padding:"5px 10px" }}>Cancel</button>
+            </div>
+          )}
+          {deletingDir && <div style={{ fontSize:"11px", color:"#6e7681", marginBottom:"8px" }}>⏳ Directory delete ho rahi hai…</div>}
+          {deleteDirError && <div style={{ fontSize:"11px", color:"#f85149", marginBottom:"8px" }}>⚠️ {deleteDirError}</div>}
 
           {/* Back button for parent dir */}
           {view === "browser" && currentPath && (
