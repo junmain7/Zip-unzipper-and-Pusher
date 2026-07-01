@@ -28,6 +28,7 @@ export async function GET(request, { params }) {
 
   try {
     const branch = await getDefaultBranch(owner, repo, headers);
+    const origin = new URL(request.url).origin;
 
     const refRes = await fetch(`${GITHUB_API_BASE}/repos/${owner}/${repo}/git/ref/heads/${branch}`, { headers });
     const refData = await refRes.json();
@@ -41,7 +42,12 @@ export async function GET(request, { params }) {
 
     const files = (treeData.tree || [])
       .filter((i) => i.type === "blob" && !skip(i.path))
-      .map((i) => ({ path: i.path, size: i.size }));
+      .map((i) => ({
+        path: i.path,
+        size: i.size,
+        // Absolute URL so any fetch tool can follow it directly from this response
+        url: `${origin}/api/agent/${token}/file/${i.path}`,
+      }));
 
     return NextResponse.json({
       owner,
@@ -50,7 +56,7 @@ export async function GET(request, { params }) {
       fileCount: files.length,
       truncated: treeData.truncated || false,
       files,
-      hint: `Fetch a file's content at: /api/agent/${token}/file/<path>  e.g. /api/agent/${token}/file/app/layout.js`,
+      hint: `Each file object has a full "url" — fetch that directly to get the file's content.`,
     });
   } catch (e) {
     return NextResponse.json({ error: "Fetch failed", detail: String(e) }, { status: 500 });
