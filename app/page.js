@@ -14,6 +14,7 @@ import FilesTab from "./components/FilesTab";
 import HistoryTab from "./components/HistoryTab";
 import AccountsTab, { AddAccountModal, SwitchAccountModal, AccountsSkeleton } from "./components/AccountsTab";
 import PullToRefresh from "./components/PullToRefresh";
+import ExplorerTab from "./components/ExplorerTab";
 
 export default function ZipPusherPage() {
   const { data: session, status: sessionStatus } = useSession();
@@ -108,9 +109,10 @@ export default function ZipPusherPage() {
   if (accountsLoading) return <AccountsSkeleton />;
 
   const tabs = [
-    { id: "zip", label: "ZIP Push", icon: "📦" },
-    { id: "files", label: "Files Push", icon: "🗂️" },
-    { id: "history", label: "History", icon: "📜" },
+    { id: "zip",      label: "ZIP Push",  icon: "📦" },
+    { id: "files",    label: "Files Push", icon: "🗂️" },
+    { id: "explorer", label: "Explorer",  icon: "📂" },
+    { id: "history",  label: "History",   icon: "📜" },
   ];
 
   return (
@@ -155,6 +157,7 @@ export default function ZipPusherPage() {
           </div>
         )}
         {activeTab === "history" && token && <HistoryTab token={token} />}
+        {activeTab === "explorer" && token && <ExplorerTab token={token} selectedRepo={selectedRepo} setSelectedRepo={setSelectedRepo} />}
         </div>
       </PullToRefresh>
 
