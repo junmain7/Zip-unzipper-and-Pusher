@@ -458,17 +458,6 @@ export default function ExplorerTab({ token }) {
             onNavigate={(p) => { handleNavigate(p); setView("browser"); }}
           />
 
-          {view === "browser" && (
-            <div style={{ display:"flex", justifyContent:"flex-end", marginBottom:"4px" }}>
-              <button
-                onClick={() => setRefreshKey(k => k + 1)}
-                style={{ background:"none", border:"none", color:"#58a6ff", cursor:"pointer", fontSize:"11px", fontFamily:"inherit", padding:"4px 6px", display:"flex", alignItems:"center", gap:"4px" }}
-              >
-                🔄 Refresh
-              </button>
-            </div>
-          )}
-
           {/* Back button for parent dir */}
           {view === "browser" && currentPath && (
             <button
