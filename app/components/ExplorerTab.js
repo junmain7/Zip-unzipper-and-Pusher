@@ -198,9 +198,43 @@ function FileEditor({ token, repo, fileItem, onBack }) {
   const [commitMsg, setCommitMsg] = useState("");
   const [saving, setSaving]   = useState(false);
   const [saveResult, setSaveResult] = useState(null);
+  const [search, setSearch]   = useState("");
+  const [matchIdx, setMatchIdx] = useState(0);
+
+  const textareaRef = useRef(null);
+  const gutterRef    = useRef(null);
 
   const isDirty = content !== original;
   const isBinary = !content && !loading;
+
+  // ── line numbers ──
+  const lineCount = content ? content.split("\n").length : 1;
+  const handleScroll = () => {
+    if (gutterRef.current && textareaRef.current) {
+      gutterRef.current.scrollTop = textareaRef.current.scrollTop;
+    }
+  };
+
+  // ── find in file ──
+  const matches = search
+    ? [...content.matchAll(new RegExp(search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi"))].map(m => m.index)
+    : [];
+
+  useEffect(() => { setMatchIdx(0); }, [search]);
+
+  const jumpToMatch = (idx) => {
+    if (!matches.length || !textareaRef.current) return;
+    const pos = matches[idx];
+    const ta = textareaRef.current;
+    ta.focus();
+    ta.setSelectionRange(pos, pos + search.length);
+    const lineNo = content.slice(0, pos).split("\n").length;
+    ta.scrollTop = Math.max(0, (lineNo - 6) * 18.7);
+    if (gutterRef.current) gutterRef.current.scrollTop = ta.scrollTop;
+  };
+
+  const goNext = () => { if (!matches.length) return; const n = (matchIdx + 1) % matches.length; setMatchIdx(n); jumpToMatch(n); };
+  const goPrev = () => { if (!matches.length) return; const n = (matchIdx - 1 + matches.length) % matches.length; setMatchIdx(n); jumpToMatch(n); };
 
   useEffect(() => {
     (async () => {
@@ -255,12 +289,40 @@ function FileEditor({ token, repo, fileItem, onBack }) {
 
       {!loading && original !== "__binary__" && (
         <>
-          <textarea
-            value={content}
-            onChange={e => { setContent(e.target.value); setSaveResult(null); }}
-            spellCheck={false}
-            style={{ ...S.inp, minHeight:"45vh", resize:"vertical", fontFamily:"'JetBrains Mono','Fira Code',monospace", fontSize:"11px", lineHeight:1.7, padding:"12px" }}
-          />
+          {/* Find bar */}
+          <div style={{ display:"flex", alignItems:"center", gap:"6px" }}>
+            <input
+              type="text" value={search}
+              onChange={e => setSearch(e.target.value)}
+              onKeyDown={e => { if (e.key === "Enter") (e.shiftKey ? goPrev() : goNext()); }}
+              placeholder="🔍 Find in file..."
+              style={{ ...S.inp, flex:1 }}
+            />
+            <span style={{ fontSize:"10.5px", color:"#6e7681", minWidth:"38px", textAlign:"center" }}>
+              {matches.length ? `${matchIdx + 1}/${matches.length}` : search ? "0/0" : ""}
+            </span>
+            <button onClick={goPrev} disabled={!matches.length} style={{ ...S.btn(false, !matches.length), padding:"6px 10px" }}>↑</button>
+            <button onClick={goNext} disabled={!matches.length} style={{ ...S.btn(false, !matches.length), padding:"6px 10px" }}>↓</button>
+          </div>
+
+          {/* Editor with line numbers */}
+          <div style={{ display:"flex", border:"1px solid #30363d", borderRadius:"6px", overflow:"hidden" }}>
+            <div
+              ref={gutterRef}
+              style={{ background:"#0d1117", color:"#484f58", fontFamily:"'JetBrains Mono','Fira Code',monospace", fontSize:"11px", lineHeight:1.7, padding:"12px 8px", textAlign:"right", userSelect:"none", overflow:"hidden", minHeight:"45vh", maxHeight:"45vh" }}
+            >
+              {Array.from({ length: lineCount }, (_, i) => <div key={i}>{i + 1}</div>)}
+            </div>
+            <textarea
+              ref={textareaRef}
+              value={content}
+              onChange={e => { setContent(e.target.value); setSaveResult(null); }}
+              onScroll={handleScroll}
+              spellCheck={false}
+              style={{ ...S.inp, border:"none", borderRadius:0, minHeight:"45vh", maxHeight:"45vh", fontFamily:"'JetBrains Mono','Fira Code',monospace", fontSize:"11px", lineHeight:1.7, padding:"12px", flex:1 }}
+            />
+          </div>
+
           <div style={{ background:"#0d1117", border:"1px solid #30363d", borderRadius:"8px", padding:"12px", display:"flex", flexDirection:"column", gap:"8px" }}>
             <input
               type="text" value={commitMsg}
