@@ -269,7 +269,14 @@ function FileEditor({ token, repo, fileItem, onBack, onDeleted }) {
         } else {
           setContent(""); setOriginal("__binary__");
         }
-      } catch(e) { setError(e.message); }
+      } catch(e) {
+        if (/not found/i.test(e.message)) {
+          // stale entry (already deleted on GitHub) — clean it up automatically
+          onDeleted && onDeleted();
+          return;
+        }
+        setError(e.message);
+      }
       finally { setLoading(false); }
     })();
   }, []);
@@ -450,6 +457,17 @@ export default function ExplorerTab({ token }) {
             onGoRepo={handleGoRepo}
             onNavigate={(p) => { handleNavigate(p); setView("browser"); }}
           />
+
+          {view === "browser" && (
+            <div style={{ display:"flex", justifyContent:"flex-end", marginBottom:"4px" }}>
+              <button
+                onClick={() => setRefreshKey(k => k + 1)}
+                style={{ background:"none", border:"none", color:"#58a6ff", cursor:"pointer", fontSize:"11px", fontFamily:"inherit", padding:"4px 6px", display:"flex", alignItems:"center", gap:"4px" }}
+              >
+                🔄 Refresh
+              </button>
+            </div>
+          )}
 
           {/* Back button for parent dir */}
           {view === "browser" && currentPath && (
